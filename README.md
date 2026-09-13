@@ -1,15 +1,41 @@
 # taste-engine
 
-A music recommender trained on one person's implicit feedback — 40,619 plays
-from a year of YouTube watch history — that scores tracks, clusters them into
-playlists, and writes them back to YouTube Music inside a 10,000-unit/day API
-budget it is not allowed to exceed.
+A single-user music recommender built from one person's YouTube watch
+history. End to end: parse a Google Takeout export, classify which watched
+videos are actually music, collapse duplicate uploads of the same recording
+into one canonical song, score by implicit feedback (play count and recency),
+cluster by mood/artist, and write ranked playlists back to YouTube Music
+through the Data API, inside a 10,000-unit/day budget it is not allowed to
+exceed. The corpus: 2,918 canonical songs from 40,619 plays across 30,440
+watched videos over 363 days.
+
+Start with §1 below — it is the spine of this repo, and §1.7 is its summary.
 
 **What this repo is actually for.** The headline number was computed four
 times and was wrong three times. Each correction came from the harness
 catching itself, and each one is documented below with the bad number left in
 place. The final result is a large, consistent lift that the dataset is too
 small to certify — and saying exactly that is the point.
+
+![A 45-track private YouTube Music playlist titled "taste-engine: T-Series / Pritam / Sony Music India"](docs/playlist.png)
+
+*The playlist `taste-engine write` actually wrote: 45 tracks from the
+"T-Series / Pritam / Sony Music India" cluster, produced by `--mode
+rediscover` and confirmed against the live API (§8).*
+
+### Quickstart
+
+1. Export your data from [Google Takeout](https://takeout.google.com)
+   (YouTube and YouTube Music → history + playlists) and unzip it under
+   `data/raw/`.
+2. Get a YouTube Data API key (`YT_API_KEY`); for write-back only, download an
+   OAuth client as `credentials.json` (exact steps: §10).
+3. `bash scripts/setup_env.sh && bash scripts/install_pkg.sh` — venv + editable install.
+4. `python -m taste_engine.parse_takeout` — Takeout → SQLite, ~15s, offline.
+5. `python -m taste_engine.resolve && python -m taste_engine.classify` — resolve video metadata, then classify music vs. not.
+6. `taste-engine write --cluster-name "..." --limit 45` — dry run; nothing is written without `--commit`.
+
+Every command, every flag, and what each one costs: §10.
 
 ---
 
