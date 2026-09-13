@@ -1,0 +1,25 @@
+# Data — never commit the Takeout export or the derived database
+data/raw/
+data/*.db
+data/*.db-journal
+data/*.sqlite
+
+# Secrets
+.env
+token.json
+client_secret*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Model / embedding cache. NB: a pattern containing a slash is anchored to the
+# repo root, so `artifacts/` alone would NOT match data/artifacts/.
+.cache/
+data/artifacts/
+*.npy
