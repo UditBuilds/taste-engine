@@ -20,7 +20,7 @@ small to certify — and saying exactly that is the point.
 | first | **+28.7%**, 4/4 splits | the hold-out set itself varied with the half-life |
 | second | **+7.8%**, 3/4 splits | half-life tuned on the same splits it was reported on |
 | third | **+1.9%**, 2/3 splits | honest tuning — but measured on duplicate-inflated tracks |
-| **fourth** | **+121%**, 3/3 splits | duplicates collapsed; **not statistically certifiable at n=3** |
+| **fourth** | **+128%**, 3/3 splits | duplicates collapsed, non-music filtered; **not certifiable at n=3** |
 
 Two of those corrections made the number smaller. The third made it much
 bigger, because the bias was in the *baseline's* favour. Neither direction was
@@ -122,7 +122,9 @@ remaining cross-artist groups are case variants of one name (`AFUSIC`/`Afusic`).
 ### 1.4 Why only five splits
 
 Nine monthly boundaries fit in 363 days; four are unusable, for a reason that
-is a property of the data rather than a threshold anyone picked:
+is a property of the data rather than a threshold anyone picked. (Counts below
+were measured before the non-music filter of §1.5; the ramp is what matters and
+it is unchanged.)
 
 | split | train days | music tracks in train | reachable test truth |
 |---|---:|---:|---:|
@@ -144,6 +146,97 @@ import in §4. The 363-day figure describes the **watch** history; the usable
 Two of the five splits are spent selecting the half-life, leaving three to
 report on. **That is what caps this result**, see below.
 
+### 1.5 Non-music in the training set, and which signal admits it
+
+§5 defends `is_music` as the union of heuristics and `categoryId`. That claim
+only stands if the union is not admitting substantial non-music, so it was
+measured rather than asserted (`scripts/contamination.py`).
+
+**5.6% upper bound** — 176 of 3,143 songs flagged by `categoryId`, by a
+non-song title, or by a runtime under 45 s or over 15 minutes.
+
+The permissive signal is the surprising one. Of the 127 songs flagged by title
+or duration, here is what admitted each *alone*:
+
+| signal | admitted alone |
+|---|---:|
+| Channel ends with `- Topic` | 0 |
+| Channel contains `VEVO` | 0 |
+| Played on `music.youtube.com` | 1 |
+| Video appears in a playlist | 5 |
+| Video in YT Music library | 0 |
+| **`categoryId == 10` alone** | **121** |
+
+**`categoryId` is the contaminating signal, not the heuristics** — guitar
+tutorials, film promos and a 63-minute vlog, all uploaded by channels YouTube
+files under category 10. So §5's "far stronger label" needs splitting in two:
+stronger on **recall** (it found the 712 artist-channel songs the heuristics
+miss), weaker on **precision** (it admits non-songs the heuristics never
+would). Both are true and the README previously said only the first.
+
+`STRICT_MUSIC` (on by default) drops songs admitted by categoryId *alone* that
+do not look like songs. It removes 202 songs carrying 220 plays — a mean of
+**1.1 plays each**.
+
+**The headline does not move, and that null was verified rather than assumed.**
+Identical numbers are equally consistent with "the filter never reached the
+evaluated set", so `scripts/verify_strict_null.py` checks which story is true:
+
+| check | result |
+|---|---|
+| filter removes songs | 202 (6.4%) |
+| evaluated pool shrinks per split | −123 / −136 / −163 — **3/3** |
+| best rank a removed song reaches | **209** of ~2,000; zero in any top-20 |
+
+The contamination is real and sits far below top-k, so it never enters a
+20-item recommendation. That is a finding about where the noise lives, not an
+absence of noise.
+
+### 1.6 The duration pass, and its measured false-merge rate
+
+The artist-keyed rule under-merges systematically. Indian labels upload under
+the label's own channel with cast metadata in the title, while the
+auto-generated `- Topic` twin sits under the composer — so the two never share
+an artist and never merge. Runtime settles it: `contentDetails.duration` is
+already fetched, and two different songs called "Raabta" do not agree to the
+second.
+
+Merging when normalised titles match and runtimes agree within **3 s** finds
+**14 further merges**. It works exactly as intended on the case that motivated
+it:
+
+| | runtime | channel | outcome |
+|---|---|---|---|
+| Raabta | 4:04 | Arijit Singh – Topic | merged |
+| Raabta | 4:04 | Pritam – Topic | merged (singer vs composer credit) |
+| Raabta | 4:46 | Jokhay – Topic | **separate** |
+
+**The measured false-merge rate is 2 of 14 (14%).** Both are title collisions
+runtime cannot resolve: Imagine Dragons' *Demons* (2:58) with Joji's (2:57),
+and Lil Uzi Vert's *FLEX UP* (2:48) with Lil Yachty's (2:51). Dropping the
+tolerance to 0 s would exclude both but would also lose six of the twelve good
+merges, so 3 s is kept and the error rate is reported rather than hidden.
+
+**A genre tiebreaker was tried and is inert.** `topicCategories` refuses a
+merge when both sides carry genre labels and those labels are disjoint. On this
+library it fires **zero** times: there are 35 genre tags and `pop` and
+`hip hop` sit on almost everything, so *Demons* overlaps on `pop` and *FLEX UP*
+on `hip hop`. It is kept because it costs no good merge and would catch a
+genuinely disjoint pair — `Raabta`/Jokhay *is* disjoint — but it did not fix
+the two errors above and is not claimed to.
+
+The pass also exposed a bug in the title normaliser: a bare `with` was being
+treated as a featured-artist marker, so **"Stay With Me" normalised to "stay"**
+and matched The Kid LAROI's "STAY", both 2:22. Bracketed `(with Drake)` was
+already handled earlier, so the rule was only ever eating ordinary English.
+
+**What it does not fix.** Five duplicate pairs survive in a 45-track Hindi-film
+playlist, all the same shape: `Lyrical: Chammak Challo | Ra One | ShahRukh
+Khan` against a bare `Chammak Challo`. The pipe-separated cast metadata means
+the two never produce the same normalised title, so the duration pass never
+compares them. A 45-track playlist is 45 distinct songs by the system's key and
+about 40 to the eye.
+
 ## 2. The result, and what it does not support
 
 ### Rediscovery — the task worth measuring
@@ -157,10 +250,10 @@ the selection never saw.
 
 | split | baseline nDCG@20 | score nDCG@20 | lift | win |
 |---|---:|---:|---:|:--:|
-| 2026-06-01 | 0.122 | 0.211 | +73% | ✔ |
-| 2026-07-01 | 0.109 | 0.312 | +186% | ✔ |
-| 2026-08-01 | 0.172 | 0.367 | +113% | ✔ |
-| **mean** | **0.134** | **0.297** | **+121%** | **3/3** |
+| 2026-06-01 | 0.122 | 0.223 | +83% | ✔ |
+| 2026-07-01 | 0.112 | 0.392 | +251% | ✔ |
+| 2026-08-01 | 0.207 | 0.389 | +88% | ✔ |
+| **mean** | **0.147** | **0.334** | **+128%** | **3/3** |
 
 **And it is not statistically established.** With three held-out splits, a
 sign test's *best possible* p-value — a clean sweep, which this is — is
@@ -195,7 +288,7 @@ is exactly why it is not the headline.
 ### Results that do not flatter the model
 
 - **Raw play count predicts future play volume better than the model does.**
-  Spearman **0.440 vs 0.371** across the whole catalogue. Recency weighting
+  Spearman **0.435 vs 0.382** across the whole catalogue. Recency weighting
   helps the head of the list, which is what a playlist draws from, and hurts
   the tail. For "predict every song's play count", delete the recency term.
 - **`cluster_diverse` loses on both tasks.** It trades accuracy for variety
@@ -236,7 +329,7 @@ One Google Takeout export, parsed into SQLite. Every figure is produced by
 | YT Music library songs (with artist metadata) | 239 |
 | Music tracks, heuristics only | 2,858 (9.4% of unique videos) |
 | Music tracks, heuristics ∪ `categoryId` | 3,570 (11.7% of unique videos) |
-| **Canonical songs** (duplicate uploads merged) | **3,143** |
+| **Canonical songs** (duplicates merged, non-music filtered) | **2,929** |
 | **Music plays** | **10,539** (25.9% of all plays) |
 
 3,570 tracks is the number. Not 17,138, not 30,440 — those are *videos
@@ -534,13 +627,38 @@ than from taste:
 New playlists are **private**; `--public` is opt-in and never the default.
 
 ```bash
-taste-engine clusters                             # pick an id
-taste-engine write --cluster 34 --limit 50        # dry run, 0 units
-taste-engine write --cluster 34 --limit 50 --commit
-taste-engine write --resume 2 --commit            # continue a partial
-taste-engine write --rollback 2 --commit          # delete it (50 units)
-taste-engine written                              # what exists
+taste-engine clusters                                    # see what exists
+taste-engine write --cluster-name "Travis Scott" --limit 50     # dry run
+taste-engine write --cluster-name "Travis Scott" --limit 50 --commit
+taste-engine write --resume 2 --commit                   # continue a partial
+taste-engine write --rollback 2 --commit                 # delete it (50 units)
+taste-engine written                                     # what exists
 ```
+
+**Select clusters by name, not by id.** HDBSCAN assigns ids from the input set,
+so they are reassigned whenever that set changes — enabling the strict music
+filter moved this library's Hindi-film cluster from 24 to 11 without its
+contents meaningfully changing. Ids are fine to read off `clusters` and use
+immediately; they are not stable identifiers and nothing should record one.
+`--cluster-name` matches on the cluster's top artists, which are stable.
+
+### The two write modes
+
+`--mode rediscover` (the default) removes the library's 50 most-played songs
+before ranking, by calling the *same* `recommend.favourites` the hold-out uses.
+Without it the writer would rank everything — the **replay** task, the one §2
+shows the baseline wins — while this README reported a rediscovery number. A
+test asserts the writer's picks never intersect the eval's held-out set.
+
+`--mode top` is the old behaviour, kept because it is a reasonable thing to
+want, and clearly labelled as the trivial task.
+
+**What rediscover mode needs:** a candidate pool several times the playlist
+length. A single-artist cluster of ~90 songs, asked for 50 after 50 favourites
+are removed, runs out of real material around the 27th and fills the rest with
+fan re-uploads, extended cuts and remixes. The same request against a 500-song
+cluster stays coherent to the end. Measured on this library: 23 of 50 tracks
+below score 0.5 for the small cluster, against 5 of 50 for the large one.
 
 Canonical songs (§1.3) matter here too: ranking songs rather than uploads took
 a 50-track playlist from **37 distinct songs to 48**. The two remaining repeats
@@ -570,7 +688,7 @@ src/taste_engine/
   writer.py          Phase 4 — quota-aware, resumable, self-verifying write
   cli.py             Phase 4 — the `taste-engine` command
 notebooks/01_eda.ipynb
-tests/               252 tests
+tests/               273 tests
 ```
 
 ## 10. Running it
@@ -592,7 +710,7 @@ python -m taste_engine.recommend               # candidate playlists
 python -m taste_engine.evaluate --both --test-days 30   # both tasks, §2
 scripts/run.sh scripts/nested_eval.py                   # the headline, §1
 scripts/run.sh scripts/final_numbers.py                 # every other figure
-python -m pytest -q                            # 252 tests
+python -m pytest -q                            # 273 tests
 ```
 
 The venv lives on the WSL filesystem (`~/.venvs/taste-engine`) while the repo

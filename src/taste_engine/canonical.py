@@ -25,6 +25,7 @@ import re
 
 import pandas as pd
 
+from . import config
 from .embed import artist_from_channel, normalise_title, strip_artist_from_title
 
 # Packaging, not content. Safe to ignore when deciding "same song?".
@@ -41,8 +42,12 @@ VARIANT_WORDS = [
 RE_VARIANT = re.compile(r"\b(?:" + "|".join(VARIANT_WORDS) + r")\b", re.I)
 
 # Featured artists move around between uploads of the same song.
+# NOT `with`: a bracketed "(with Drake)" is already removed by RE_BRACKETS, so
+# the only thing a bare `with` catches is ordinary English. It turned
+# "Stay With Me" into "stay", which the duration pass then matched against
+# The Kid LAROI's "STAY" - both 2:22, two entirely different songs.
 RE_FEAT = re.compile(
-    r"\b(?:feat|ft|featuring|with|w)\b\.?\s.*$", re.I
+    r"\b(?:feat|ft|featuring)\b\.?\s.*$", re.I
 )
 RE_BRACKETS = re.compile(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}")
 RE_NONWORD = re.compile(r"[^a-z0-9\s]")
@@ -52,7 +57,7 @@ RE_SPACES = re.compile(r"\s+")
 # the track keeps its own identity.
 RE_DISTINCT = re.compile(
     r"\b(remix|cover|instrumental|karaoke|live|acoustic|demo|mashup|"
-    r"sped\s*up\s*remix|edit\s*by|vs\.?)\b",
+    r"sped\s*up\s*remix|edit\s*by|vs\.?|solo|unplugged|reprise|orchestral|symphony)\b",
     re.I,
 )
 
@@ -99,12 +104,26 @@ def canonical_key(title: str | None, channel: str | None = None) -> str:
     artist = RE_NONWORD.sub(" ", str(artist).lower())
     artist = RE_SPACES.sub(" ", artist).strip()
 
-    key = f"{artist}|{text}" if artist else f"?|{text}"
-    # A remix/cover/live version keeps its own identity, tagged so it cannot
-    # collide with the studio recording.
+    marker = ""
     if distinct_marker:
-        key += "|" + RE_DISTINCT.search(raw).group(0).lower().strip()
-    return key
+        # A remix/cover/live version keeps its own identity, tagged so it
+        # cannot collide with the studio recording.
+        marker = "|" + RE_DISTINCT.search(raw).group(0).lower().strip()
+    return (f"{artist}|{text}" if artist else f"?|{text}") + marker
+
+
+def title_core(title, channel=None) -> str:
+    """The song name with the artist removed - deliberately NOT a merge key.
+
+    Merging on this alone fuses different songs that share a title. The
+    duration pass uses it only to decide which keys are *worth comparing*;
+    runtime then decides whether they are the same recording.
+    """
+    key = canonical_key(title, channel)
+    if not key:
+        return ""
+    _, _, rest = key.partition("|")
+    return rest
 
 
 def add_canonical_key(df: pd.DataFrame) -> pd.DataFrame:
@@ -119,6 +138,86 @@ def add_canonical_key(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+RE_ISO = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
+
+
+def iso_seconds(duration):
+    """'PT3M21S' -> 201. None when the runtime is unknown."""
+    if not isinstance(duration, str):
+        return None
+    m = RE_ISO.fullmatch(duration)
+    if not m:
+        return None
+    h, mi, s = (int(x) if x else 0 for x in m.groups())
+    total = h * 3600 + mi * 60 + s
+    return total or None
+
+
+def merge_by_duration(work: pd.DataFrame, tolerance: int | None = None) -> pd.Series:
+    """Second pass: same song name, different artist attribution, same runtime.
+
+    The artist-keyed rule under-merges by design, and the shape of the misses
+    is systematic: a label uploads under its own channel (`T-Series`) while the
+    auto-generated `- Topic` twin sits under the composer, so the two never
+    share an artist. Runtime settles it - two different songs called "Raabta"
+    do not agree to the second, while an upload and its twin do.
+
+    Only keys that already share an artist-stripped title are compared, and a
+    missing runtime never merges: unknown is not a match.
+
+    **Genre breaks the ties runtime cannot.** Two different songs can share a
+    title and agree on runtime by coincidence - Imagine Dragons' "Demons" is
+    2:58 and Joji's is 2:57. `topicDetails.topicCategories` is an independent
+    signal, so a merge is refused when both sides carry genre labels and those
+    labels are disjoint. An absent genre set is treated as unknown rather than
+    as disagreement: refusing to merge on missing data would throw away the
+    label/Topic pairs this pass exists to find.
+    """
+    tolerance = config.DURATION_MERGE_TOLERANCE_S if tolerance is None else tolerance
+    keys = work["canonical_key"].copy()
+    if "seconds" not in work.columns:
+        return keys
+
+    from .embed import tidy_genres
+
+    has_genres = "genres" in work.columns
+    agg = {"seconds": ("seconds", "first"), "core": ("core_key", "first")}
+    if has_genres:
+        agg["genres"] = ("genres", "first")
+
+    # One representative runtime per existing key: the most-played upload's.
+    rep = (
+        work.sort_values(["play_count", "video_id"], ascending=[False, True])
+        .dropna(subset=["seconds"])
+        .groupby("canonical_key")
+        .agg(**agg)
+    )
+    rep["gset"] = (
+        rep["genres"].map(lambda g: frozenset(tidy_genres(g)))
+        if has_genres
+        else [frozenset()] * len(rep)
+    )
+
+    remap: dict[str, str] = {}
+    for core, group in rep[rep["core"] != ""].groupby("core"):
+        if len(group) < 2:
+            continue
+        ordered = group.sort_values("seconds")
+        cluster_head, previous, head_genres = None, None, frozenset()
+        for key, row in ordered.iterrows():
+            genres = row["gset"]
+            close = previous is not None and row["seconds"] - previous <= tolerance
+            # Unknown genres cannot contradict; only two populated, disjoint
+            # sets are evidence of two different songs.
+            contradicts = bool(genres) and bool(head_genres) and not (genres & head_genres)
+            if close and not contradicts:
+                remap[key] = cluster_head
+            else:
+                cluster_head, head_genres = key, genres
+            previous = row["seconds"]
+    return keys.map(lambda k: remap.get(k, k))
+
+
 def collapse(df: pd.DataFrame) -> pd.DataFrame:
     """One row per song. Play counts sum; the most-played upload represents it.
 
@@ -128,6 +227,16 @@ def collapse(df: pd.DataFrame) -> pd.DataFrame:
         return df.assign(variants=pd.Series(dtype="int64"))
 
     work = add_canonical_key(df)
+    work["core_key"] = [
+        title_core(t, c)
+        for t, c in zip(
+            work["title"],
+            work.get("channel", pd.Series([None] * len(work), index=work.index)),
+        )
+    ]
+    if "duration" in work.columns:
+        work["seconds"] = work["duration"].map(iso_seconds)
+        work["canonical_key"] = merge_by_duration(work)
     work = work.sort_values(
         ["canonical_key", "play_count", "video_id"], ascending=[True, False, True]
     )

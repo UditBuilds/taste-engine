@@ -17,6 +17,35 @@ import sqlite3
 import pandas as pd
 
 
+def favourites(df: pd.DataFrame, n: int | None = None) -> set[str]:
+    """The n most-played tracks — the set the rediscovery hold-out removes.
+
+    Shared by `evaluate.rediscovery_split` and the writer's
+    `--mode rediscover` so the playlist that ships is drawn from the same pool
+    the evaluation scores. Two copies of this rule would drift, and the drift
+    would be invisible: the eval would keep reporting rediscovery while the
+    product quietly shipped replay.
+
+    `video_id` breaks ties deterministically; without it the excluded set
+    inherits the frame's incoming order, which is sorted by `score`, and the
+    hold-out would depend on the model being evaluated.
+    """
+    from . import config
+
+    n = config.EXCLUDE_TOP if n is None else n
+    if df.empty or n <= 0:
+        return set()
+    return set(
+        df.sort_values(["play_count", "video_id"], ascending=[False, True])
+        .head(n)["video_id"]
+    )
+
+
+def exclude_favourites(df: pd.DataFrame, n: int | None = None) -> pd.DataFrame:
+    """Drop the most-played tracks, leaving what the model has to find."""
+    return df[~df["video_id"].isin(favourites(df, n))].reset_index(drop=True)
+
+
 # Every strategy breaks ties on `video_id` last. Without it a tied ranking
 # inherits the frame's incoming row order, which `scored_tracks` sorts by
 # `score` - so the baseline's picks would shift with the half-life and it would

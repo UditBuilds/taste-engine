@@ -174,3 +174,102 @@ class TestReport:
         assert rep["rows_out"] == 2
         assert rep["collapsed"] == 1
         assert rep["largest_group"] == 2
+
+
+class TestDurationMerge:
+    """The second pass: same title, different artist, same runtime.
+
+    Exists because the artist-keyed rule under-merges systematically - a label
+    uploads under its own channel while the `- Topic` twin sits under the
+    composer, so they never share an artist. Runtime settles it.
+    """
+
+    def frame(self, rows):
+        return pd.DataFrame(
+            [
+                {"video_id": f"v{i:02d}aaaaaaa"[:11], "title": t, "channel": c,
+                 "play_count": p, "duration": d, "genres": g,
+                 "last_played": "2026-06-01T00:00:00+00:00",
+                 "first_played": "2026-01-01T00:00:00+00:00"}
+                for i, (t, c, p, d, g) in enumerate(rows)
+            ]
+        )
+
+    def test_same_song_different_credit_merges(self):
+        """Singer-credited and composer-credited uploads of one recording."""
+        df = self.frame([
+            ("Raabta", "Arijit Singh - Topic", 10, "PT4M4S", ["Pop music"]),
+            ("Raabta", "Pritam - Topic", 4, "PT4M4S", ["Pop music"]),
+        ])
+        assert len(collapse(df)) == 1
+
+    def test_different_songs_sharing_a_title_stay_apart(self):
+        """The 4:46 'Raabta' is a different song from the 4:04 one."""
+        df = self.frame([
+            ("Raabta", "Arijit Singh - Topic", 10, "PT4M4S", ["Pop music"]),
+            ("Raabta", "Jokhay - Topic", 3, "PT4M46S", ["Hip_hop_music"]),
+        ])
+        assert len(collapse(df)) == 2
+
+    def test_tolerance_is_respected(self):
+        df = self.frame([
+            ("Bulleya", "Arijit Singh - Topic", 9, "PT5M50S", ["Pop music"]),
+            ("Bulleya", "Pritam - Topic", 5, "PT5M49S", ["Pop music"]),
+        ])
+        assert len(collapse(df)) == 1
+
+    def test_beyond_tolerance_does_not_merge(self):
+        df = self.frame([
+            ("Song", "A - Topic", 9, "PT3M0S", ["Pop music"]),
+            ("Song", "B - Topic", 5, "PT3M20S", ["Pop music"]),
+        ])
+        assert len(collapse(df)) == 2
+
+    def test_missing_runtime_never_merges(self):
+        """Unknown is not a match."""
+        df = self.frame([
+            ("Song", "A - Topic", 9, "PT3M0S", ["Pop music"]),
+            ("Song", "B - Topic", 5, None, ["Pop music"]),
+        ])
+        assert len(collapse(df)) == 2
+
+    def test_disjoint_genres_block_a_merge(self):
+        """The tiebreaker. Inert on this library - `pop` and `hip hop` are on
+        almost everything, so real collisions overlap - but it is the guard
+        that would catch a genuinely different song at the same runtime."""
+        df = self.frame([
+            ("Mirror", "A - Topic", 9, "PT3M0S", ["Hip_hop_music"]),
+            ("Mirror", "B - Topic", 5, "PT3M1S", ["Classical_music"]),
+        ])
+        assert len(collapse(df)) == 2
+
+    def test_overlapping_genres_still_merge(self):
+        df = self.frame([
+            ("Mirror", "A - Topic", 9, "PT3M0S", ["Hip_hop_music", "Pop music"]),
+            ("Mirror", "B - Topic", 5, "PT3M1S", ["Pop music"]),
+        ])
+        assert len(collapse(df)) == 1
+
+    def test_unknown_genres_do_not_block(self):
+        """Refusing on missing data would throw away the pairs this finds."""
+        df = self.frame([
+            ("Mirror", "A - Topic", 9, "PT3M0S", []),
+            ("Mirror", "B - Topic", 5, "PT3M1S", ["Pop music"]),
+        ])
+        assert len(collapse(df)) == 1
+
+    def test_plays_are_summed_across_the_merge(self):
+        df = self.frame([
+            ("Raabta", "Arijit Singh - Topic", 10, "PT4M4S", ["Pop music"]),
+            ("Raabta", "Pritam - Topic", 4, "PT4M4S", ["Pop music"]),
+        ])
+        assert collapse(df)["play_count"].iloc[0] == 14
+
+    def test_stay_with_me_is_not_stay(self):
+        """`with` was treated as a featured-artist marker, so 'Stay With Me'
+        normalised to 'stay' and matched The Kid LAROI's 'STAY' - both 2:22."""
+        df = self.frame([
+            ("Stay With Me", "1nonly - Topic", 5, "PT2M22S", ["Pop music"]),
+            ("STAY", "The Kid LAROI - Topic", 9, "PT2M22S", ["Pop music"]),
+        ])
+        assert len(collapse(df)) == 2

@@ -300,14 +300,142 @@ class TestBookkeeping:
         monkeypatch.setattr(
             "taste_engine.recommend.build", lambda *a, **k: make_tracks(3)
         )
+        # mode="top" isolates the cluster filter from the favourites filter.
         with pytest.raises(writer.WriteBlocked, match="no tracks"):
-            writer.plan(conn, cluster=99, limit=5)
+            writer.plan(conn, cluster=99, limit=5, mode="top")
 
     def test_a_present_cluster_is_selected(self, env, monkeypatch):
         conn, _, _ = env
         monkeypatch.setattr(
             "taste_engine.recommend.build", lambda *a, **k: make_tracks(9)
         )
-        p = writer.plan(conn, cluster=3, limit=4)
+        p = writer.plan(conn, cluster=3, limit=4, mode="top")
         assert p["count"] == 4
         assert p["title"] == "taste-engine: Test Artist"
+
+
+class TestModes:
+    """The playlist must be drawn from the pool the evaluation scores.
+
+    The README argues rediscovery is the task worth measuring. If the writer
+    ranked everything, the product would ship *replay* - the trivial task the
+    most-played baseline wins - while the README reported a rediscovery number.
+    That gap is what `--mode rediscover` closes, and it closes it by calling
+    the same `recommend.favourites` the hold-out uses.
+    """
+
+    @pytest.fixture
+    def catalogue(self):
+        return pd.DataFrame({
+            "video_id": [f"v{i:02d}aaaaaaa"[:11] for i in range(12)],
+            "title": [f"Song {i}" for i in range(12)],
+            "channel": ["A - Topic"] * 12,
+            "play_count": [100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 5, 1],
+            "score": [9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.9, 0.8, 0.7],
+            "cluster": [1] * 12,
+            "cluster_name": ["A"] * 12,
+            "days_since": [1] * 12,
+        })
+
+    def test_rediscover_is_the_default(self, env, monkeypatch, catalogue):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        assert writer.plan(conn, cluster=1, limit=3, exclude_top=4)["mode"] ==             "rediscover"
+
+    def test_rediscover_drops_the_most_played(self, env, monkeypatch, catalogue):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        picks = writer.plan(conn, cluster=1, limit=3, exclude_top=4)["tracks"]
+        assert set(picks["play_count"]) & {100, 90, 80, 70} == set()
+        assert picks["play_count"].tolist() == [60, 50, 40]
+
+    def test_top_mode_keeps_them(self, env, monkeypatch, catalogue):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        picks = writer.plan(conn, cluster=1, limit=3, mode="top")["tracks"]
+        assert picks["play_count"].tolist() == [100, 90, 80]
+
+    def test_the_two_modes_differ(self, env, monkeypatch, catalogue):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        a = writer.plan(conn, cluster=1, limit=5, exclude_top=4)["tracks"]["video_id"]
+        b = writer.plan(conn, cluster=1, limit=5, mode="top")["tracks"]["video_id"]
+        assert list(a) != list(b)
+
+    def test_exclusion_matches_the_evaluations_hold_out(self, env, monkeypatch,
+                                                        catalogue):
+        """The whole point: same function, same set, no drift."""
+        from taste_engine.recommend import favourites
+
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        held_out = favourites(catalogue, 4)
+        picks = writer.plan(conn, cluster=1, limit=8, exclude_top=4)["tracks"]
+        assert not set(picks["video_id"]) & held_out
+
+    def test_exclusion_is_global_not_per_cluster(self, env, monkeypatch):
+        """The eval removes the library's favourites, not each cluster's."""
+        conn, _, _ = env
+        frame = pd.DataFrame({
+            "video_id": [f"v{i:02d}bbbbbbb"[:11] for i in range(6)],
+            "title": [f"S{i}" for i in range(6)],
+            "channel": ["A - Topic"] * 6,
+            "play_count": [100, 90, 5, 4, 3, 2],
+            "score": [9.0, 8.0, 3.0, 2.0, 1.0, 0.5],
+            "cluster": [1, 1, 2, 2, 2, 2],
+            "cluster_name": ["A", "A", "B", "B", "B", "B"],
+            "days_since": [1] * 6,
+        })
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: frame)
+        # Cluster 2's own top tracks are not favourites of the library, so
+        # excluding the global top 2 must leave cluster 2 untouched.
+        picks = writer.plan(conn, cluster=2, limit=4, exclude_top=2)["tracks"]
+        assert len(picks) == 4
+
+    def test_mode_is_recorded_in_the_plan_and_title(self, env, monkeypatch, catalogue):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        p = writer.plan(conn, cluster=1, limit=3, exclude_top=4)
+        assert p["excluded_favourites"] == 4
+        assert "rediscover" in p["title"]
+        assert "excluded" in p["description"]
+
+    def test_render_shows_the_mode(self, env, monkeypatch, catalogue):
+        conn, ledger, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        text = writer.render_plan(writer.plan(conn, cluster=1, limit=3,
+                                              exclude_top=4), ledger)
+        assert "rediscover" in text and "matching the eval" in text
+
+    def test_unknown_mode_is_refused(self, env):
+        conn, _, _ = env
+        with pytest.raises(writer.WriteBlocked, match="unknown mode"):
+            writer.plan(conn, cluster=1, limit=3, mode="vibes",
+                        tracks=make_tracks(3))
+
+    def test_a_small_cluster_cannot_do_rediscover(self, env, monkeypatch):
+        """A real constraint, not a corner case.
+
+        `--mode rediscover` removes the library's 50 most-played songs, so a
+        cluster with fewer than ~50 songs of its own can be emptied outright.
+        The writer says which of the two filters emptied it.
+        """
+        conn, _, _ = env
+        small = pd.DataFrame({
+            "video_id": [f"v{i:02d}ccccccc"[:11] for i in range(5)],
+            "title": [f"S{i}" for i in range(5)],
+            "channel": ["A - Topic"] * 5,
+            "play_count": [50, 40, 30, 20, 10],
+            "score": [5.0, 4.0, 3.0, 2.0, 1.0],
+            "cluster": [7] * 5, "cluster_name": ["A"] * 5, "days_since": [1] * 5,
+        })
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: small)
+        with pytest.raises(writer.WriteBlocked, match="after excluding favourites"):
+            writer.plan(conn, cluster=7, limit=3)   # default exclude_top=50
+
+    def test_a_cluster_emptied_by_exclusion_says_so(self, env, monkeypatch,
+                                                    catalogue):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        with pytest.raises(writer.WriteBlocked, match="after excluding favourites"):
+            writer.plan(conn, cluster=1, limit=3, exclude_top=12)

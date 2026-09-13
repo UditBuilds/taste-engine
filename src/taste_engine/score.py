@@ -121,7 +121,8 @@ def scored_tracks(
     keep = [
         c
         for c in ("video_id", "title", "channel", "channel_id", "is_music",
-                  "label_source", "genres", "in_library", "in_playlist")
+                  "label_source", "genres", "in_library", "in_playlist",
+                  "duration")
         if c in labels.columns
     ]
     df = agg.merge(labels[keep], on="video_id", how="inner")

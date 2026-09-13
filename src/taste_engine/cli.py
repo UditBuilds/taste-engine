@@ -55,7 +55,8 @@ def cmd_write(args) -> int:
         else:
             plan = writer.plan(
                 conn, cluster=args.cluster, limit=args.limit,
-                half_life=args.half_life,
+                half_life=args.half_life, mode=args.mode,
+                exclude_top=args.exclude_top, cluster_name=args.cluster_name,
             )
 
         if not args.commit:
@@ -150,9 +151,26 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     w = sub.add_parser("write", help="write a playlist back to YouTube")
-    w.add_argument("--cluster", type=int, help="cluster id to draw tracks from")
+    w.add_argument("--cluster", type=int, help="cluster id (NOT stable across runs)")
+    w.add_argument(
+        "--cluster-name", metavar="TEXT",
+        help="select the cluster by artist name, e.g. --cluster-name 'Travis "
+             "Scott'. Preferred over --cluster: ids are reassigned whenever the "
+             "song set changes.",
+    )
     w.add_argument("--limit", type=int, default=50, help="tracks (default 50)")
     w.add_argument("--half-life", type=float, help="override the recency half-life")
+    w.add_argument(
+        "--mode", choices=list(writer.MODES), default=writer.MODE_REDISCOVER,
+        help="rediscover (default): exclude the library's most-played songs, "
+             "matching the evaluated task. top: rank everything, favourites "
+             "included - the replay task the baseline wins.",
+    )
+    w.add_argument(
+        "--exclude-top", type=int,
+        help="how many favourites --mode rediscover removes (default 50, "
+             "the same number the eval holds out)",
+    )
     w.add_argument("--resume", type=int, metavar="ROW", help="continue a partial write")
     w.add_argument("--rollback", type=int, metavar="ROW", help="delete a written playlist")
     w.add_argument("--cap", type=int, help="override the daily quota cap")

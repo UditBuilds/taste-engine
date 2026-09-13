@@ -189,17 +189,11 @@ def rediscovery_split(
         conn, split_date, half_life, cluster=cluster, test_days=test_days,
         canonical=canonical,
     )
-    # `video_id` breaks ties deterministically. Without it the excluded set
-    # inherits the frame's incoming order, which `scored_tracks` sorts by
-    # `score` - so the half-life would decide which tracks get held out, and
-    # the baseline would move when the model's hyperparameter moved. It did:
-    # baseline nDCG drifted 0.270 -> 0.339 across a half-life sweep before this
-    # line existed. The invariance of `most_played` is the control that caught
-    # it, and `tests/test_rediscovery.py` now asserts it.
-    obvious = set(
-        train.sort_values(["play_count", "video_id"], ascending=[False, True])
-        .head(exclude_top)["video_id"]
-    )
+    # Shared with the writer's `--mode rediscover`, so the playlist that ships
+    # is drawn from the same pool this scores. See `recommend.favourites`.
+    from .recommend import favourites
+
+    obvious = favourites(train, exclude_top)
     candidates = train[~train["video_id"].isin(obvious)].reset_index(drop=True)
     truth = test[~test["video_id"].isin(obvious)].reset_index(drop=True)
     return candidates, truth, obvious

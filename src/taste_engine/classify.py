@@ -18,6 +18,7 @@ quota to produce.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 
 import numpy as np
@@ -105,7 +106,7 @@ def _cache_key(conn: sqlite3.Connection) -> tuple:
     path = conn.execute("PRAGMA database_list").fetchone()[2]
     plays = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
     meta = conn.execute("SELECT COUNT(*) FROM video_metadata").fetchone()[0]
-    return (path, plays, meta)
+    return (path, plays, meta, config.STRICT_MUSIC)
 
 
 def classify(conn: sqlite3.Connection, use_cache: bool = True) -> pd.DataFrame:
@@ -168,6 +169,8 @@ def _classify_uncached(conn: sqlite3.Connection) -> pd.DataFrame:
     # treats as music to avoid a handful of marginal compilations. The union
     # keeps both kinds of evidence.
     df["is_music"] = df["api_music"].fillna(False).astype(bool) | df["heuristic_music"]
+    if config.STRICT_MUSIC:
+        df["is_music"] &= ~_looks_like_non_song(df)
     df["label_source"] = np.select(
         [
             df["api_music"].fillna(False).astype(bool) & df["heuristic_music"],
@@ -178,6 +181,45 @@ def _classify_uncached(conn: sqlite3.Connection) -> pd.DataFrame:
         default="none",
     )
     return df
+
+
+NOT_A_SONG = re.compile(
+    r"\b(?:tutorial|lesson|how to|karaoke|jukebox|audio ?book|"
+    r"full (?:movie|episode|album)|episode|webseries|web series|podcast|"
+    r"interview|reaction|vlog|gameplay|trailer|dialogue|speech|"
+    r"non stop|mashup of|all songs)\b",
+    re.I,
+)
+RE_ISO_DURATION = re.compile(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?")
+
+
+def _iso_seconds(duration):
+    if not isinstance(duration, str):
+        return None
+    m = RE_ISO_DURATION.fullmatch(duration)
+    if not m:
+        return None
+    h, mi, s = (int(x) if x else 0 for x in m.groups())
+    return h * 3600 + mi * 60 + s
+
+
+def _looks_like_non_song(df: pd.DataFrame) -> pd.Series:
+    """Songs admitted by categoryId alone that do not look like songs.
+
+    Deliberately narrow: a video the user played on music.youtube.com, filed in
+    a playlist, or that sits on a `- Topic` or VEVO channel is kept whatever its
+    length. Only `categoryId`-only admissions are second-guessed, because that
+    is where the measured contamination is.
+    """
+    heuristic = df[list(HEURISTIC_SIGNALS)].any(axis=1)
+    seconds = df["duration"].map(_iso_seconds) if "duration" in df.columns else None
+    bad_title = df["title"].fillna("").astype(str).str.contains(NOT_A_SONG)
+    if seconds is None:
+        too_long = too_short = pd.Series(False, index=df.index)
+    else:
+        too_long = seconds.fillna(0) > config.STRICT_MAX_SECONDS
+        too_short = (seconds < config.STRICT_MIN_SECONDS) & seconds.notna()
+    return ~heuristic & (bad_title | too_long | too_short)
 
 
 def _genres_from_topics(raw) -> list[str]:
