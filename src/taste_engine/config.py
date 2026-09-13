@@ -93,6 +93,18 @@ STRICT_MUSIC = True
 STRICT_MAX_SECONDS = 15 * 60
 STRICT_MIN_SECONDS = 45
 
+# --- backfill floor (Build Brief 3) -----------------------------------------
+# A --cluster-name request can run out of eligible material long before the
+# playlist fills: measured on this library, T-Series (492 tracks) has only 22
+# scoring >= 0.5 after the rediscovery favourites exclusion, and Travis Scott
+# (84 tracks) has 21 - see scripts/backfill_report.py. Padding with material
+# the model itself scores below this floor would be the writer contradicting
+# the ranker, so a shallow cluster backfills from its nearest neighbours by
+# embedding centroid instead of padding - and if the whole pool above the
+# floor still can't fill the request, the playlist comes back short rather
+# than padded.
+MIN_SCORE = 0.5
+
 # --- write-back retry policy -------------------------------------------------
 # First live write (2026-09-13): playlistItems.insert returned 409
 # SERVICE_UNAVAILABLE on the second insert. The error path only handled 403

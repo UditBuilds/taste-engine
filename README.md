@@ -804,6 +804,58 @@ a 50-track playlist from **37 distinct songs to 48**. The two remaining repeats
 are an instrumental kept deliberately separate from its vocal version, and two
 fan-channel extended cuts that the conservative artist rule declines to merge.
 
+### Backfill
+
+The pool-depth problem above is really a floor problem: how much of a cluster
+the model itself believes in. `config.MIN_SCORE` (0.5) makes that explicit -
+candidates below it are not eligible, deep cluster or not. A cluster that
+clears the floor on its own is unaffected; the output for a deep cluster is
+identical to before this existed. A cluster that does not backfills from its
+nearest neighbours by embedding centroid - cosine distance in the same
+PCA-reduced space HDBSCAN actually clustered in, nearest cluster first, ranked
+by score within each. If every cluster's eligible material runs out before the
+playlist fills, the playlist comes back short. It is never padded below the
+floor.
+
+Measured before writing anything (`scripts/backfill_report.py`, no API calls),
+at limit 45:
+
+| cluster | tracks | native (>= 0.5) | backfilled | final | source clusters |
+|---|---:|---:|---:|---:|---|
+| T-Series / Pritam / Sony Music India | 492 | 22 | 23 | 45 | Joji (13), Playboi Carti (8), Doja Cat (2) |
+| Travis Scott | 84 | 21 | 24 | 45 | Kendrick Lamar (5), Drake (6), Post Malone (5), Justin Bieber (3), Young Thug (2), Radiohead/NBSPLV/softsync (2), Kanye West (1) |
+
+Both filled to the requested 45 - the global pool (276 eligible tracks across
+32 clusters, after the rediscovery favourites exclusion) had headroom for
+these two. That will not hold for every cluster; a thinner neighbourhood
+returns fewer tracks rather than padding, per the measurement above.
+
+**Whether the result is musically sensible depends entirely on the cluster,
+and for T-Series it plainly is not.** Travis Scott's backfill is almost all
+hip-hop - Kendrick, Drake, Post Malone, Young Thug, Kanye - genuinely adjacent
+listening, with one clear miss (Radiohead). More than half the T-Series
+playlist is backfill from Joji, Playboi Carti and Doja Cat: alt-R&B and rap
+acts with no evident relationship to Hindi film music beyond sharing this
+listener's library. That is not a bug to tune away - `MIN_SCORE` was not
+adjusted to produce either result, and adjusting it to hide the T-Series
+mismatch would trade an honest problem for a harder-to-see one. It is the same
+limitation §6 already measured: embeddings here are MiniLM over title and
+artist text, which tracks language and naming pattern as readily as genre.
+"Nearest cluster" can only be as meaningful as the clustering it is measured
+in - reliable for a cluster shaped by one artist's genre (Travis Scott), not
+for one shaped by industry and language (T-Series). Audio features would be
+the actual fix; YouTube does not expose them.
+
+The eval does not move, and cannot: `evaluate.py` never imports or calls
+`writer.plan()`. `cluster_diverse`, the only clustering-aware strategy in the
+rediscovery eval, is `recommend.by_cluster_diverse` - a different, top-N
+diversification strategy unrelated to backfill's cluster-fill logic. Re-run
+with and without this change (`python -m taste_engine.evaluate --both
+--test-days 30`, backfill code stashed for the "before" run): every strategy's
+numbers were identical to three decimals in both the single-split and
+across-split tables. That is a verified null, not an assumed one - the same
+check `scripts/verify_strict_null.py` performs elsewhere in this repo.
+
 No test in the suite makes a live API call; `tests/fake_youtube.py` stands in.
 
 ## 9. Layout

@@ -5,6 +5,7 @@ behaviours that matter are the ones that stop a mistake being expensive:
 dry-run by default, resume after interruption, never a silent partial, and a
 write that verifies itself.
 """
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -594,3 +595,130 @@ class TestRetry:
         assert result["deleted_remote"] is False
         assert result["already_absent"] is True
         assert writer.get_row(conn, report["row_id"])["status"] == "rolled_back"
+
+
+class TestBackfill:
+    """Build Brief 3, Part B: a --cluster-name request can run out of
+    material scoring >= MIN_SCORE long before the playlist fills (measured:
+    T-Series has 22 of 492 eligible, Travis Scott 21 of 84). Backfill draws
+    from the nearest clusters by embedding centroid rather than padding with
+    material the model itself scores below the floor.
+    """
+
+    @pytest.fixture
+    def multi_cluster(self):
+        rows = [
+            dict(video_id="c1trackaaaa", title="C1 Hit A", channel="X - Topic",
+                 play_count=5, score=0.9, cluster=1, cluster_name="Cluster One",
+                 days_since=1, embed_text="c1 hit a"),
+            dict(video_id="c1trackbbbb", title="C1 Hit B", channel="X - Topic",
+                 play_count=3, score=0.7, cluster=1, cluster_name="Cluster One",
+                 days_since=1, embed_text="c1 hit b"),
+            # below MIN_SCORE - must never be selected, backfill or not
+            dict(video_id="c1trackcccc", title="C1 Deep Cut", channel="X - Topic",
+                 play_count=1, score=0.2, cluster=1, cluster_name="Cluster One",
+                 days_since=300, embed_text="c1 deep cut"),
+        ]
+        for i in range(4):  # cluster 2: near neighbour, 4 eligible
+            rows.append(dict(
+                video_id=f"c2track{i:04d}", title=f"C2 Track {i}", channel="Y - Topic",
+                play_count=4 - i, score=round(0.8 - i * 0.05, 2), cluster=2,
+                cluster_name="Cluster Two", days_since=1, embed_text=f"c2 track {i}",
+            ))
+        for i in range(4):  # cluster 3: far neighbour, 4 eligible
+            rows.append(dict(
+                video_id=f"c3track{i:04d}", title=f"C3 Track {i}", channel="Z - Topic",
+                play_count=4 - i, score=round(0.75 - i * 0.05, 2), cluster=3,
+                cluster_name="Cluster Three", days_since=1, embed_text=f"c3 track {i}",
+            ))
+        return pd.DataFrame(rows)
+
+    @pytest.fixture(autouse=True)
+    def fixed_centroids(self, monkeypatch):
+        """Cluster 2 sits near cluster 1; cluster 3 sits opposite. Fixed and
+        deterministic - no real embedding model involved in this test."""
+        monkeypatch.setattr(
+            writer, "_cluster_centroids",
+            lambda real_frame: {
+                1: np.array([1.0, 0.0]),
+                2: np.array([0.9, 0.1]),
+                3: np.array([-1.0, 0.0]),
+            },
+        )
+
+    def test_deep_cluster_backfills_zero(self, env, monkeypatch, multi_cluster):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: multi_cluster)
+        p = writer.plan(conn, cluster=1, limit=2, mode="top")
+        assert p["native_count"] == 2
+        assert p["backfilled_count"] == 0
+        assert p["backfill_by_cluster"] == []
+        assert p["shortfall"] == 0
+        assert list(p["tracks"]["video_id"]) == ["c1trackaaaa", "c1trackbbbb"]
+
+    def test_shallow_cluster_backfills_nearest_first_in_score_order(
+        self, env, monkeypatch, multi_cluster
+    ):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: multi_cluster)
+        p = writer.plan(conn, cluster=1, limit=5, mode="top")
+        # 2 native + 3 more needed; cluster 2 (near) supplies all 3 before
+        # cluster 3 (far) is ever touched
+        assert p["native_count"] == 2
+        assert p["backfilled_count"] == 3
+        assert p["backfill_by_cluster"] == [(2, "Cluster Two", 3)]
+        got = list(p["tracks"]["video_id"])
+        assert got[:2] == ["c1trackaaaa", "c1trackbbbb"]
+        assert got[2:] == ["c2track0000", "c2track0001", "c2track0002"]
+
+    def test_every_returned_track_clears_min_score(self, env, monkeypatch, multi_cluster):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: multi_cluster)
+        p = writer.plan(conn, cluster=1, limit=8, mode="top")
+        assert (p["tracks"]["score"] >= writer.config.MIN_SCORE).all()
+        assert "c1trackcccc" not in set(p["tracks"]["video_id"])
+
+    def test_short_of_limit_returns_fewer_never_pads_below_floor(
+        self, env, monkeypatch, multi_cluster
+    ):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: multi_cluster)
+        # 2 + 4 + 4 = 10 eligible total, well short of 15
+        p = writer.plan(conn, cluster=1, limit=15, mode="top")
+        assert p["count"] == 10
+        assert p["shortfall"] == 5
+        assert (p["tracks"]["score"] >= writer.config.MIN_SCORE).all()
+        assert p["backfill_by_cluster"] == [(2, "Cluster Two", 4), (3, "Cluster Three", 4)]
+
+    def test_backfilled_tracks_never_intersect_held_out_favourites(
+        self, env, monkeypatch, multi_cluster
+    ):
+        conn, _, _ = env
+        boosted = multi_cluster.copy()
+        boosted.loc[boosted["video_id"] == "c2track0000", "play_count"] = 999
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: boosted)
+        p = writer.plan(conn, cluster=1, limit=5, exclude_top=1)  # mode defaults to rediscover
+        assert "c2track0000" not in set(p["tracks"]["video_id"])
+
+        from taste_engine.recommend import favourites
+
+        held_out = favourites(boosted, 1)
+        assert not (set(p["tracks"]["video_id"]) & held_out)
+
+    def test_title_is_pinned_to_the_requested_cluster(self, env, monkeypatch, multi_cluster):
+        """Row 0 can be backfilled when a cluster has zero eligible tracks of
+        its own; the title must not silently become the neighbour's."""
+        conn, _, _ = env
+        empty_native = multi_cluster[multi_cluster["cluster"] != 1].copy()
+        starved = pd.concat([
+            pd.DataFrame([dict(
+                video_id="c1belowfloor", title="C1 Only Track", channel="X - Topic",
+                play_count=1, score=0.1, cluster=1, cluster_name="Cluster One",
+                days_since=300, embed_text="c1 only track",
+            )]),
+            empty_native,
+        ]).reset_index(drop=True)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: starved)
+        p = writer.plan(conn, cluster=1, limit=3, mode="top")
+        assert p["native_count"] == 0
+        assert p["title"] == "taste-engine: Cluster One"

@@ -26,6 +26,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 
 from . import config
@@ -58,6 +59,96 @@ MODE_TOP = "top"
 MODES = (MODE_REDISCOVER, MODE_TOP)
 
 
+def _cluster_centroids(real_frame: pd.DataFrame) -> dict[int, np.ndarray]:
+    """Mean PCA-reduced embedding per real (non-noise) cluster.
+
+    Re-derives from the cached MiniLM embeddings already computed for this
+    corpus - `embed_texts` keys its cache by the exact text list, so this is
+    a cache hit (measured: ~0.05s for the full library), not a re-embed. That
+    keeps the backfill's notion of "nearest cluster" local to this function
+    rather than threading reduced vectors through `recommend.build()`'s
+    contract and every caller of it, `evaluate.py` included.
+    """
+    from . import embed
+
+    texts = list(real_frame["embed_text"])
+    vectors = embed.embed_texts(texts, use_cache=True)
+    reduced = embed.reduce_dims(vectors)
+    positions = np.asarray(real_frame["cluster"])
+    centroids: dict[int, np.ndarray] = {}
+    for cid in np.unique(positions):
+        centroids[int(cid)] = reduced[positions == cid].mean(axis=0)
+    return centroids
+
+
+def _clusters_by_distance(real_frame: pd.DataFrame, from_cluster: int) -> list[int]:
+    """Every other real cluster's id, nearest to `from_cluster` first.
+
+    Cosine distance between mean embeddings in the PCA-reduced space HDBSCAN
+    actually clustered in - raw 384-d is where clustering itself degenerates
+    (embed.py's own PCA_COMPONENTS note), so it is not a space worth measuring
+    "nearest" in either.
+    """
+    centroids = _cluster_centroids(real_frame)
+    origin = centroids.get(from_cluster)
+    if origin is None:
+        return []
+    origin_norm = origin / max(float(np.linalg.norm(origin)), 1e-12)
+
+    ranked = []
+    for cid, vec in centroids.items():
+        if cid == from_cluster:
+            continue
+        vec_norm = vec / max(float(np.linalg.norm(vec)), 1e-12)
+        cos_distance = 1.0 - float(np.dot(origin_norm, vec_norm))
+        ranked.append((cos_distance, cid))
+    ranked.sort()  # distance first, cluster id breaks ties deterministically
+    return [cid for _, cid in ranked]
+
+
+def _select_with_backfill(
+    frame: pd.DataFrame, cluster: int, limit: int
+) -> tuple[pd.DataFrame, int, list[tuple[int, str, int]]]:
+    """Fill `limit` slots from `cluster`; backfill from nearest clusters (by
+    embedding centroid) when it runs out of tracks scoring >= MIN_SCORE.
+
+    Never pads below the floor: if every real cluster's eligible tracks are
+    exhausted before reaching `limit`, the result is simply shorter. Returns
+    `(tracks, native_count, backfill_summary)`, where `backfill_summary` is
+    one `(cluster_id, cluster_name, n_taken)` per cluster actually drawn
+    from, in the order drawn - empty when the cluster had enough on its own.
+    """
+    real = frame[frame["cluster"] >= 0]
+    eligible = real[real["score"] >= config.MIN_SCORE]
+
+    def _ranked(pool: pd.DataFrame) -> pd.DataFrame:
+        return pool.sort_values(["score", "video_id"], ascending=[False, True])
+
+    native = _ranked(eligible[eligible["cluster"] == cluster])
+    if len(native) >= limit:
+        picked = native.head(limit).reset_index(drop=True)
+        return picked, len(picked), []
+
+    parts = [native]
+    native_count = len(native)
+    remaining = limit - native_count
+    summary: list[tuple[int, str, int]] = []
+
+    for other in _clusters_by_distance(real, cluster):
+        if remaining <= 0:
+            break
+        pool = _ranked(eligible[eligible["cluster"] == other])
+        if pool.empty:
+            continue
+        take = pool.head(remaining)
+        parts.append(take)
+        summary.append((other, str(take["cluster_name"].iloc[0]), len(take)))
+        remaining -= len(take)
+
+    picked = pd.concat(parts).reset_index(drop=True)
+    return picked, native_count, summary
+
+
 def plan(
     conn: sqlite3.Connection,
     cluster: int | None = None,
@@ -86,13 +177,18 @@ def plan(
         raise WriteBlocked(f"unknown mode {mode!r}; choose from {list(MODES)}")
 
     excluded_count = 0
+    requested_cluster_name = None
+    native_count = None
+    backfill_summary: list[tuple[int, str, int]] = []
     if tracks is None:
         from .recommend import build, favourites
 
         frame = build(conn, half_life=half_life)
         if mode == MODE_REDISCOVER:
             # Global, before the cluster filter - the eval excludes the
-            # library's favourites, not each cluster's.
+            # library's favourites, not each cluster's. This is also the
+            # pool backfill draws from: filtering once, up front, means a
+            # backfilled track can no more be a favourite than a native one.
             obvious = favourites(frame, exclude_top)
             excluded_count = len(obvious)
             frame = frame[~frame["video_id"].isin(obvious)]
@@ -111,20 +207,31 @@ def plan(
                 raise WriteBlocked(f"no cluster matching name {cluster_name!r}")
             cluster = int(match["cluster"].value_counts().idxmax())
         if cluster is not None:
-            frame = frame[frame["cluster"] == cluster]
-            if frame.empty:
+            cluster_frame = frame[frame["cluster"] == cluster]
+            if cluster_frame.empty:
                 raise WriteBlocked(
                     f"cluster {cluster} has no tracks"
                     + (" left after excluding favourites" if excluded_count else "")
                 )
-        frame = frame.sort_values(["score", "video_id"], ascending=[False, True])
-        tracks = frame.head(limit).reset_index(drop=True)
+            # Pinned before backfill can touch row 0: a shallow cluster with
+            # zero eligible tracks of its own would otherwise title the
+            # playlist after whichever neighbour it borrowed from first.
+            requested_cluster_name = str(cluster_frame["cluster_name"].iloc[0])
+            tracks, native_count, backfill_summary = _select_with_backfill(
+                frame, cluster, limit
+            )
+        else:
+            frame = frame.sort_values(["score", "video_id"], ascending=[False, True])
+            tracks = frame.head(limit).reset_index(drop=True)
 
     name = "playlist"
-    if cluster is not None and "cluster_name" in tracks.columns and len(tracks):
+    if cluster is not None:
+        name = requested_cluster_name or name
+    elif "cluster_name" in tracks.columns and len(tracks):
         name = str(tracks["cluster_name"].iloc[0])
 
     n = len(tracks)
+    backfilled_count = n - native_count if native_count is not None else 0
     costs = config.QUOTA_COSTS
     units = costs[CREATE_METHOD] + costs[INSERT_METHOD] * n + costs[LIST_METHOD]
     return {
@@ -147,6 +254,10 @@ def plan(
         "tracks": tracks,
         "count": n,
         "units": units,
+        "native_count": native_count,
+        "backfilled_count": backfilled_count,
+        "backfill_by_cluster": backfill_summary,
+        "shortfall": max(0, limit - n) if cluster is not None else 0,
         "breakdown": {
             CREATE_METHOD: costs[CREATE_METHOD],
             INSERT_METHOD: costs[INSERT_METHOD] * n,
@@ -164,7 +275,21 @@ def render_plan(p: dict, ledger: QuotaLedger | None = None) -> str:
         f"  mode       {p.get('mode', MODE_REDISCOVER)}"
         + (f"   ({p['excluded_favourites']} most-played songs excluded, "
            "matching the eval)" if p.get("excluded_favourites") else ""),
-        f"  tracks     {p['count']}",
+        f"  tracks     {p['count']}"
+        + (f"   ({p['shortfall']} short of the {p['count'] + p['shortfall']} "
+           "requested - no more material clears the floor)"
+           if p.get("shortfall") else ""),
+    ]
+    if p.get("native_count") is not None:
+        n_neighbours = len(p["backfill_by_cluster"])
+        lines.append(
+            f"  provenance {p['native_count']} native, {p['backfilled_count']} "
+            f"backfilled from {n_neighbours} neighbouring "
+            f"cluster{'s' if n_neighbours != 1 else ''}"
+        )
+        for cid, cname, count in p["backfill_by_cluster"]:
+            lines.append(f"             {count:>3} from cluster {cid} ({cname})")
+    lines += [
         "",
         "  quota cost",
         f"    {CREATE_METHOD:<24}{p['breakdown'][CREATE_METHOD]:>7,}",
@@ -183,12 +308,16 @@ def render_plan(p: dict, ledger: QuotaLedger | None = None) -> str:
         if p["units"] > remaining:
             lines.append("\n  REFUSED: this exceeds today's remaining quota.")
     lines.append("")
+    requested_cluster = p.get("cluster")
     for i, row in p["tracks"].iterrows():
         title = str(row.get("title") or row["video_id"])[:58]
         score = row.get("score")
+        tag = ""
+        if requested_cluster is not None and row.get("cluster") != requested_cluster:
+            tag = f"  [backfill: {row.get('cluster_name', row.get('cluster'))}]"
         lines.append(
-            f"  {i + 1:>3}. {title:<58} {score:.3f}" if score is not None
-            else f"  {i + 1:>3}. {title}"
+            f"  {i + 1:>3}. {title:<58} {score:.3f}{tag}" if score is not None
+            else f"  {i + 1:>3}. {title}{tag}"
         )
     return "\n".join(lines)
 
