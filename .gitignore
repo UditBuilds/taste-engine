@@ -1,15 +1,34 @@
-# Data — never commit the Takeout export or the derived database
+# --- Personal data -----------------------------------------------------------
+# data/raw/ holds the Google Takeout export: a full year of watch history AND
+# search history. This repo is public. Never commit any of it.
 data/raw/
 data/*.db
 data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 data/*.sqlite
+data/*.sqlite3
+data/*.csv
+data/*.json
 
-# Secrets
+# Derived model artifacts (embeddings). Rebuildable, and large.
+data/artifacts/
+*.npy
+
+# --- Secrets -----------------------------------------------------------------
 .env
-token.json
+.env.*
+!.env.example
+credentials.json
 client_secret*.json
+service-account*.json
+token.json
+token.pickle
+*.pem
+*.key
+*.p12
 
-# Python
+# --- Python ------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -17,9 +36,6 @@ __pycache__/
 venv/
 .pytest_cache/
 .ipynb_checkpoints/
-
-# Model / embedding cache. NB: a pattern containing a slash is anchored to the
-# repo root, so `artifacts/` alone would NOT match data/artifacts/.
 .cache/
-data/artifacts/
-*.npy
+build/
+dist/

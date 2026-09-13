@@ -136,19 +136,36 @@ def build_corpus(df: pd.DataFrame, mode: str = "title_artist") -> list[str]:
         if mode == "title":
             texts.append(bare or clean_title)
         else:  # title_genre
-            labels = list(genres) if isinstance(genres, (list, tuple)) else []
-            tags = ", ".join(_tidy_genre(g) for g in labels)
+            tags = ", ".join(tidy_genres(genres))
             texts.append(f"{bare}. {tags}".strip(". ") if tags else (bare or clean_title))
     return texts
 
 
+# `topicCategories` tags almost every music video with the bare topic "Music",
+# so it appears on nearly all of them and separates nothing. Dropping it keeps
+# only the labels that actually discriminate.
+GENERIC_TOPICS = {"music", "entertainment", "lifestyle", "society", "knowledge"}
+
+
 def _tidy_genre(label: str) -> str:
     """'Hip_hop_music' / 'Hip hop music' -> 'hip hop'."""
-    text = str(label).replace("_", " ").strip().lower()
+    text = str(label).rsplit("/", 1)[-1].replace("_", " ").strip().lower()
     for suffix in (" music", " genre"):
         if text.endswith(suffix):
             text = text[: -len(suffix)]
     return text.strip()
+
+
+def tidy_genres(genres) -> list[str]:
+    """Wikipedia topic URLs -> de-duplicated, discriminative genre labels."""
+    if not isinstance(genres, (list, tuple)):
+        return []
+    out: list[str] = []
+    for raw in genres:
+        label = _tidy_genre(raw)
+        if label and label not in GENERIC_TOPICS and label not in out:
+            out.append(label)
+    return out
 
 
 def _cache_path(texts: list[str], model_name: str) -> Path:

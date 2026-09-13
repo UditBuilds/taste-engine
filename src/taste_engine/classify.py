@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import numpy as np
 import pandas as pd
 
 from . import config
@@ -95,9 +96,9 @@ def has_metadata(conn: sqlite3.Connection) -> bool:
 def classify(conn: sqlite3.Connection) -> pd.DataFrame:
     """Heuristic labels, plus API labels wherever metadata has been fetched.
 
-    `is_music` prefers the authoritative categoryId and falls back to the
-    heuristic union for videos not yet resolved, so the pipeline runs to
-    completion with or without API access.
+    `is_music` is the union of the two (see the reasoning below), so the
+    pipeline runs to completion with or without API access: without metadata
+    it degrades cleanly to the heuristics alone.
     """
     df = classify_heuristic(conn)
 
@@ -113,12 +114,38 @@ def classify(conn: sqlite3.Connection) -> pd.DataFrame:
     meta = _metadata_frame(conn)
     df = df.merge(meta, on="video_id", how="left")
     df["resolved"] = df["found"].fillna(0).astype(int).eq(1)
-    df["api_music"] = df["category_id"].where(df["resolved"]).eq(config.MUSIC_CATEGORY_ID)
-    df.loc[~df["resolved"], "api_music"] = pd.NA
+    # Nullable boolean: unresolved videos are genuinely unknown, not False.
+    # (A plain bool column cannot hold pd.NA under pandas 3.)
+    df["api_music"] = (
+        df["category_id"].eq(config.MUSIC_CATEGORY_ID).astype("boolean")
+    ).where(df["resolved"])
     df["genres"] = df["topic_categories"].map(_genres_from_topics)
 
-    df["is_music"] = df["api_music"].fillna(df["heuristic_music"]).astype(bool)
-    df["label_source"] = df["resolved"].map({True: "categoryId", False: "heuristic"})
+    # Union, not categoryId-overrides-heuristic. The two label different things
+    # and the disagreements show it:
+    #
+    #   712 videos categoryId calls music that the heuristics miss - artist-owned
+    #       channels with no '- Topic' or VEVO marker (Don Toliver's own channel,
+    #       75 plays on one track; Central Cee; PARTYNEXTDOOR; T-Series).
+    #    53 videos the heuristics call music that categoryId files under
+    #       'People & Blogs' or 'Entertainment' - fan re-uploads, slowed remixes,
+    #       extended edits. categoryId describes the *uploader's* channel, not the
+    #       content, and the signal that caught these was the user playing them on
+    #       music.youtube.com or filing them in a playlist.
+    #
+    # Letting categoryId override would discard 53 tracks this user demonstrably
+    # treats as music to avoid a handful of marginal compilations. The union
+    # keeps both kinds of evidence.
+    df["is_music"] = df["api_music"].fillna(False).astype(bool) | df["heuristic_music"]
+    df["label_source"] = np.select(
+        [
+            df["api_music"].fillna(False).astype(bool) & df["heuristic_music"],
+            df["api_music"].fillna(False).astype(bool),
+            df["heuristic_music"],
+        ],
+        ["both", "categoryId", "heuristic"],
+        default="none",
+    )
     return df
 
 

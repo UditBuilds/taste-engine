@@ -76,13 +76,23 @@ cells = [
         "unusable, which is asserted in `tests/test_dataset_facts.py` so nothing\n"
         "downstream starts relying on it."
     ),
+    MD(
+        "Playlist titles are pseudonymised (`Playlist A`, `Playlist B`, ...) before\n"
+        "they reach any output in this notebook. Every metric that uses them treats\n"
+        "them as opaque group labels, so the real names add nothing to the analysis\n"
+        "and this repo is public. Track, artist and cluster names are the substance\n"
+        "and are shown as-is. The mapping is written to `data/playlist_aliases.json`,\n"
+        "which is gitignored. See `taste_engine/redact.py`."
+    ),
     CODE(
+        "from taste_engine import redact\n"
         "pl = pd.read_sql('SELECT title, created_at, updated_at FROM playlists', conn)\n"
+        "pl['label'] = redact.redact_series(pl.title, redact.aliases_for(conn))\n\n"
         "print('created_at:'); print(pl.created_at.str[:10].value_counts().to_string())\n"
         "print('\\nupdated_at:'); print(pl.updated_at.str[:10].value_counts().head(3).to_string())\n"
-        "dupes = pl.title.value_counts()\n"
+        "dupes = pl.label.value_counts()\n"
         "print(f'\\nduplicate playlist titles: {(dupes > 1).sum()} '\n"
-        "      f'(e.g. {dupes.index[0]!r} x{dupes.iloc[0]})')"
+        "      f'(e.g. {dupes.index[0]} x{dupes.iloc[0]})')"
     ),
     MD("## 2. How concentrated is the listening?"),
     CODE(
@@ -150,10 +160,32 @@ cells = [
         "`\"{title} - {artist}\"`, so MiniLM keys heavily on the artist name. Genre\n"
         "is a decent proxy for mood, but a track that sounds nothing like the rest\n"
         "of an artist's catalogue still lands with them.\n\n"
-        "**40% of tracks are outliers.** Given 60% of tracks were played exactly\n"
+        "**~40% of tracks are outliers.** Given 60% of tracks were played exactly\n"
         "once, that is closer to honest than alarming - HDBSCAN is refusing to\n"
         "invent a mood for a one-off listen, which is exactly why it was chosen\n"
         "over KMeans."
+    ),
+    MD(
+        "### Is the artist the problem? Test it, do not assume it\n\n"
+        "The obvious fix is to drop the artist and embed title plus genre. Scored\n"
+        "against an **external** ground truth - the user's own 48 playlists,\n"
+        "restricted to tracks filed in exactly one - it makes things worse.\n"
+        "Silhouette would measure tidiness in the space the clustering was built\n"
+        "from, which is circular; a human saying 'these belong together' is not."
+    ),
+    CODE(
+        "from taste_engine import cluster_eval\n"
+        "cluster_eval.compare_modes(conn, tracks)"
+    ),
+    MD(
+        "Bare titles (`TBH`, `20 Min`, `Ready`) carry almost no semantic signal, so\n"
+        "noise jumps and coverage collapses. Genre tags do help coverage - there\n"
+        "are only 35 distinct ones, so the buckets are broad and cut across the\n"
+        "finer distinctions the user actually drew. `coverage` is reported so a\n"
+        "clustering cannot win by calling everything noise.\n\n"
+        "Caveat: the ground truth is itself partly artist-shaped - several\n"
+        "playlists are single-artist collections - so it rewards artist clustering\n"
+        "to some degree by construction."
     ),
     CODE(
         "top = summary[summary.cluster >= 0].nlargest(12, 'plays')\n"
@@ -163,9 +195,48 @@ cells = [
     ),
     MD(
         "## 5. Does it beat the baseline?\n\n"
-        "Temporal hold-out: train strictly before the split, test after. The\n"
-        "baseline is 'recommend the most-played tracks', which for repeat\n"
-        "consumption is strong, not a strawman."
+        "Temporal hold-out: train strictly before the split, test after. The model\n"
+        "sees no test-window play - not for scoring, not for clustering.\n\n"
+        "### Rediscovery - the task that matters\n\n"
+        "Remove the training window's 50 most-played tracks from both the\n"
+        "candidate pool and the ground truth, then ask what else gets played.\n"
+        "'Name the tracks he plays most' *is* the baseline; a model that agrees\n"
+        "with it has not recommended anything."
+    ),
+    CODE(
+        "redis = evaluate.evaluate_rediscovery(conn, k=20,\n"
+        "                                      test_days=config.EVAL_TEST_DAYS)\n"
+        "print(f\"candidates {redis['candidates']:,} | reachable truth \"\n"
+        "      f\"{redis['reachable']:,} | ceiling@20 {redis['ceiling']:.1%}\")\n"
+        "redis['results']"
+    ),
+    MD(
+        "`recall@20` is capped at the ceiling printed above - 20 picks against\n"
+        "hundreds of reachable tracks - so it is for comparing strategies, not a\n"
+        "headline. Note `hits` and `ndcg` can disagree: nDCG is graded by how many\n"
+        "times a track was actually replayed, so a few heavy-rotation finds beat\n"
+        "many marginal ones."
+    ),
+    CODE(
+        "detail, summary_r = evaluate.rediscovery_robustness(\n"
+        "    conn, k=20, test_days=config.EVAL_TEST_DAYS)\n"
+        "summary_r"
+    ),
+    MD(
+        "### Replay - the trivial task, shown for contrast\n\n"
+        "Rank the whole catalogue by what gets played next. Run as originally\n"
+        "specified (precision@20, full 105-day window) the **baseline scores\n"
+        "1.00** - a track played 50 times in nine months is certain to recur in\n"
+        "the next three. A metric that cannot go up cannot rank anything."
+    ),
+    CODE(
+        "sat = evaluate.evaluate(conn, k=20, test_days=None)\n"
+        "print(f\"precision@20, full 105-day window - saturated: {sat['saturated']}\")\n"
+        "sat['results'][['strategy', 'hits', 'precision@20', 'ndcg@20']]"
+    ),
+    MD(
+        "Shortening the horizon and raising k restores discrimination - and on\n"
+        "this task the baseline is genuinely competitive, which is the point."
     ),
     CODE(
         "report = evaluate.evaluate(conn, test_days=config.EVAL_TEST_DAYS)\n"
@@ -174,37 +245,12 @@ cells = [
         "report['results']"
     ),
     MD(
-        "### Why not precision@20 over the full remaining window?\n\n"
-        "Because it saturates. Run exactly as the brief specified, the *baseline*\n"
-        "scores 1.00 - a track played 50 times in nine months is certain to recur\n"
-        "in the next three. A metric that cannot go up cannot rank anything."
-    ),
-    CODE(
-        "sat = evaluate.evaluate(conn, k=20, test_days=None)\n"
-        "print(f\"precision@20, full 105-day window - saturated: {sat['saturated']}\")\n"
-        "sat['results'][['strategy', 'hits', 'precision@20', 'ndcg@20']]"
-    ),
-    MD(
-        "### One split is one sample\n\n"
-        "The half-life is chosen on *consistency across splits*, not on the single\n"
-        "best number. 7 days scores higher on average but loses at one boundary;\n"
-        "30 days never loses."
-    ),
-    CODE(
-        "detail, summary_r = evaluate.robustness(conn)\n"
-        "print(summary_r.to_string(index=False, float_format=lambda v: f'{v:.4f}'))\n"
-        "print('\\nper-split detail, half-life 30:')\n"
-        "detail[detail.half_life == 30][['split', 'test_tracks', 'base_ndcg',\n"
-        "                                'score_ndcg', 'base_precision',\n"
-        "                                'score_precision', 'win']]"
-    ),
-    MD(
         "### The result that does not flatter the model\n\n"
         "Over the *whole* catalogue, raw play count correlates better with future\n"
-        "play volume than the recency-weighted score does (Spearman 0.49 vs 0.42\n"
-        "at this split). Recency helps at the head of the list, which is what a\n"
-        "50-track playlist draws from, and hurts in the tail. Both are true and\n"
-        "both are reported."
+        "play volume than the recency-weighted score does - see the `spearman`\n"
+        "column above. Recency helps at the head of the list, which is what a\n"
+        "playlist draws from, and hurts in the tail. Both are true and both are\n"
+        "reported."
     ),
     CODE("conn.close()\nprint('done')"),
 ]

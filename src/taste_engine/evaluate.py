@@ -181,8 +181,15 @@ def rediscovery_split(
     train, test = split_frames(
         conn, split_date, half_life, cluster=cluster, test_days=test_days
     )
+    # `video_id` breaks ties deterministically. Without it the excluded set
+    # inherits the frame's incoming order, which `scored_tracks` sorts by
+    # `score` - so the half-life would decide which tracks get held out, and
+    # the baseline would move when the model's hyperparameter moved. It did:
+    # baseline nDCG drifted 0.270 -> 0.339 across a half-life sweep before this
+    # line existed. The invariance of `most_played` is the control that caught
+    # it, and `tests/test_rediscovery.py` now asserts it.
     obvious = set(
-        train.sort_values("play_count", ascending=False)
+        train.sort_values(["play_count", "video_id"], ascending=[False, True])
         .head(exclude_top)["video_id"]
     )
     candidates = train[~train["video_id"].isin(obvious)].reset_index(drop=True)
@@ -209,8 +216,11 @@ def evaluate_rediscovery(
     split_date = split_date or config.EVAL_SPLIT_DATE
     names = strategies or list(STRATEGIES)
 
+    # Clustering is only needed by cluster_diverse; skipping it when that
+    # strategy is not requested makes a half-life sweep tractable.
     candidates, truth, obvious = rediscovery_split(
-        conn, split_date, half_life, exclude_top, test_days
+        conn, split_date, half_life, exclude_top, test_days,
+        cluster="cluster_diverse" in names,
     )
     if candidates.empty or truth.empty:
         raise ValueError(f"empty candidate or truth set at split {split_date}")
@@ -266,11 +276,13 @@ def rediscovery_robustness(
     splits = splits or [
         "2026-03-01", "2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01",
     ]
+    strategies = list(STRATEGIES)
     rows = []
     for split in splits:
         try:
             report = evaluate_rediscovery(
-                conn, split, k, half_life, exclude_top=exclude_top, test_days=test_days
+                conn, split, k, half_life, strategies=strategies,
+                exclude_top=exclude_top, test_days=test_days
             )
         except ValueError:
             continue
@@ -303,6 +315,45 @@ def rediscovery_robustness(
         ]
     ).sort_values(f"mean_ndcg@{k}", ascending=False)
     return detail, summary
+
+
+def rediscovery_half_life_sweep(
+    conn: sqlite3.Connection,
+    half_lives: list[float] | None = None,
+    k: int = 20,
+    exclude_top: int = 50,
+    test_days: int | None = None,
+) -> pd.DataFrame:
+    """Tune the decay on the task the product is actually for.
+
+    The replay task is the wrong thing to tune against: it rewards agreeing
+    with the most-played baseline, which is the behaviour rediscovery is trying
+    to avoid. `most_played` is invariant to half-life, so its column is a
+    control - if it moves, something is leaking.
+    """
+    half_lives = half_lives or [7, 14, 30, 60, 90, 180, 365]
+    rows = []
+    for half_life in half_lives:
+        detail, _ = rediscovery_robustness(
+            conn, k=k, half_life=half_life, exclude_top=exclude_top,
+            test_days=test_days,
+        )
+        if detail.empty:
+            continue
+        rows.append(
+            {
+                "half_life": half_life,
+                "splits": len(detail),
+                "wins": int((detail["score_ndcg"] > detail["most_played_ndcg"]).sum()),
+                "mean_ndcg": detail["score_ndcg"].mean(),
+                "worst_lift": (
+                    (detail["score_ndcg"] - detail["most_played_ndcg"])
+                    / detail["most_played_ndcg"]
+                ).min(),
+                "baseline_ndcg": detail["most_played_ndcg"].mean(),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def sweep(

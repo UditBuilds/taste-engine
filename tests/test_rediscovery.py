@@ -91,6 +91,49 @@ class TestRediscoveryMetrics:
         assert redis_base < replay_base
 
 
+class TestBaselineIsAValidControl:
+    """The baseline must not move when the model's hyperparameter moves.
+
+    It did once: `scored_tracks` returns rows ordered by `score`, so tied play
+    counts at the top-50 cutoff let the half-life decide which tracks were held
+    out. The baseline's nDCG drifted 0.270 -> 0.339 across a half-life sweep,
+    which would have made every comparison in the README meaningless. These
+    tests are why that cannot come back silently.
+    """
+
+    def test_excluded_set_is_independent_of_half_life(self, db):
+        sets = [
+            frozenset(rediscovery_split(db, SPLIT, half_life=hl, cluster=False)[2])
+            for hl in (7, 30, 90, 365)
+        ]
+        assert len(set(sets)) == 1, "the held-out favourites shifted with half-life"
+
+    def test_ground_truth_is_independent_of_half_life(self, db):
+        truths = [
+            frozenset(rediscovery_split(db, SPLIT, half_life=hl, cluster=False)[1]["video_id"])
+            for hl in (7, 90)
+        ]
+        assert truths[0] == truths[1]
+
+    def test_baseline_picks_are_independent_of_half_life(self, db):
+        from taste_engine.recommend import recommend
+
+        picks = []
+        for hl in (7, 30, 90, 365):
+            candidates, _, _ = rediscovery_split(db, SPLIT, half_life=hl, cluster=False)
+            picks.append(tuple(recommend(candidates, n=20, strategy="most_played")["video_id"]))
+        assert len(set(picks)) == 1, "most_played is not invariant to half-life"
+
+    def test_baseline_score_is_independent_of_half_life(self, db):
+        scores = {
+            evaluate_rediscovery(
+                db, SPLIT, k=20, half_life=hl, strategies=["most_played"], test_days=30
+            )["results"].iloc[0]["ndcg@20"]
+            for hl in (7, 30, 90, 365)
+        }
+        assert len(scores) == 1, f"baseline nDCG moved with half-life: {scores}"
+
+
 class TestNdcgGrading:
     def test_grades_by_play_volume_not_just_presence(self):
         relevance = {"a": 20.0, "b": 1.0, "c": 1.0}

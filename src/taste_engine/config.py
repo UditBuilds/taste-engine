@@ -44,11 +44,13 @@ QUOTA_COSTS = {
 VIDEOS_LIST_BATCH = 50  # max IDs accepted per videos.list call
 
 # --- scoring ---------------------------------------------------------------
-# Chosen for consistency, not peak score: across six usable split dates it is
-# the only half-life that beats the most-played baseline at every one of them.
-# 7 days scores higher on average but loses at one split.
-# Reproduce with: python -m taste_engine.evaluate --robustness
-RECENCY_HALF_LIFE_DAYS = 30.0
+# Tuned on the REDISCOVERY task (the one the product is for), not on replay.
+# Best mean nDCG@20 of the sweep: wins 3 of 4 splits, +7.8% over the
+# most-played baseline, but loses 27% at the fourth. No half-life wins all
+# four. With only 4 usable splits the sweep and the report share their data,
+# so treat +7.8% as an upper bound rather than an unbiased estimate.
+# Reproduce with: scripts/run.sh scripts/final_numbers.py
+RECENCY_HALF_LIFE_DAYS = 14.0
 
 # --- evaluation ------------------------------------------------------------
 # Temporal hold-out boundary: train strictly before, test on/after.

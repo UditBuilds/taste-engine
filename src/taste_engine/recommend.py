@@ -17,22 +17,28 @@ import sqlite3
 import pandas as pd
 
 
+# Every strategy breaks ties on `video_id` last. Without it a tied ranking
+# inherits the frame's incoming row order, which `scored_tracks` sorts by
+# `score` - so the baseline's picks would shift with the half-life and it would
+# stop being a valid control.
 def by_most_played(df: pd.DataFrame, n: int = 20) -> pd.DataFrame:
     """Baseline: the n most-played tracks, ties broken by recency."""
     return df.sort_values(
-        ["play_count", "days_since"], ascending=[False, True]
+        ["play_count", "days_since", "video_id"], ascending=[False, True, True]
     ).head(n).reset_index(drop=True)
 
 
 def by_score(df: pd.DataFrame, n: int = 20) -> pd.DataFrame:
     """log1p(plays) * recency decay - the model in section 7.1."""
-    return df.sort_values("score", ascending=False).head(n).reset_index(drop=True)
+    return df.sort_values(
+        ["score", "video_id"], ascending=[False, True]
+    ).head(n).reset_index(drop=True)
 
 
 def by_recency(df: pd.DataFrame, n: int = 20) -> pd.DataFrame:
     """Ablation: recency alone, ignoring how often a track was played."""
     return df.sort_values(
-        ["days_since", "play_count"], ascending=[True, False]
+        ["days_since", "play_count", "video_id"], ascending=[True, False, True]
     ).head(n).reset_index(drop=True)
 
 

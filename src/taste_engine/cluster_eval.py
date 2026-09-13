@@ -6,9 +6,12 @@ a genuine external label: they are a human saying "these belong together". A
 clustering that recovers them is coherent in the sense that matters for
 generating playlists.
 
-Restricted to tracks appearing in exactly one playlist, so a track filed under
-both "Chill" and "Heartbreak Hindi" cannot be counted as a disagreement when
-the model puts it in one of them.
+Restricted to tracks appearing in exactly one playlist, so a track filed in two
+of them cannot be counted as a disagreement when the model puts it in one.
+
+Playlist titles are pseudonymised before they reach any output - every metric
+here treats them as opaque group labels, so the real names add nothing. See
+`redact.py`.
 
 Run:  python -m taste_engine.cluster_eval
 """
@@ -20,10 +23,18 @@ import pandas as pd
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
 from .embed import CORPUS_MODES, cluster_tracks
+from .redact import alias, aliases_for
 
 
-def playlist_ground_truth(conn: sqlite3.Connection) -> dict[str, str]:
-    """video_id -> playlist name, for videos filed in exactly one playlist."""
+def playlist_ground_truth(
+    conn: sqlite3.Connection, redacted: bool = True
+) -> dict[str, str]:
+    """video_id -> playlist label, for videos filed in exactly one playlist.
+
+    Labels are pseudonymised by default. Every metric here treats them as
+    opaque group identifiers, so the real titles add nothing and several are
+    personal - see `redact.py`. Pass `redacted=False` for local inspection.
+    """
     rows = conn.execute(
         """
         SELECT video_id, MIN(playlist_name) AS name
@@ -32,7 +43,11 @@ def playlist_ground_truth(conn: sqlite3.Connection) -> dict[str, str]:
         HAVING COUNT(*) = 1
         """
     ).fetchall()
-    return {r[0]: r[1] for r in rows}
+    truth = {r[0]: r[1] for r in rows}
+    if not redacted:
+        return truth
+    mapping = aliases_for(conn)
+    return {vid: alias(name, mapping) for vid, name in truth.items()}
 
 
 def purity(labels: list[int], truth: list[str]) -> float:
