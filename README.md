@@ -5,27 +5,28 @@ from a year of YouTube watch history — that scores tracks, clusters them into
 playlists, and writes them back to YouTube Music inside a 10,000-unit/day API
 budget it is not allowed to exceed.
 
-**The honest headline: the model does not significantly beat a most-played
-baseline.** +1.9% nDCG@20 on three held-out splits, winning two of three,
-sign-test p = 0.50. What this repo is actually worth reading for is how that
-number was arrived at — including two earlier, larger, wrong versions of it
-that were computed, believed, and then discarded.
+**What this repo is actually for.** The headline number was computed four
+times and was wrong three times. Each correction came from the harness
+catching itself, and each one is documented below with the bad number left in
+place. The final result is a large, consistent lift that the dataset is too
+small to certify — and saying exactly that is the point.
 
 ---
 
-## 1. How the number got smaller three times
-
-This is the part I would want a reviewer to read. The measurement changed twice
-before the result did, and both changes came from the harness catching itself
-rather than from anything external.
+## 1. How the number was wrong three times
 
 | | reported | why it was wrong |
 |---|---:|---|
-| first | **+28.7%**, 4/4 splits | hold-out set leaked; see below |
-| second | **+7.8%**, 3/4 splits | leak fixed, but the half-life was tuned on the same splits it was reported on |
-| **final** | **+1.9%**, 2/3 splits, p = 0.50 | nested tuning: half-life selected on early splits, reported on later ones it never saw |
+| first | **+28.7%**, 4/4 splits | the hold-out set itself varied with the half-life |
+| second | **+7.8%**, 3/4 splits | half-life tuned on the same splits it was reported on |
+| third | **+1.9%**, 2/3 splits | honest tuning — but measured on duplicate-inflated tracks |
+| **fourth** | **+121%**, 3/3 splits | duplicates collapsed; **not statistically certifiable at n=3** |
 
-### The leak, and the control that caught it
+Two of those corrections made the number smaller. The third made it much
+bigger, because the bias was in the *baseline's* favour. Neither direction was
+chosen; both fell out of a check.
+
+### 1.1 The leak, and the control that caught it
 
 `evaluate.py` carried this comment, written when the sweep was added, on the
 assumption it would never matter:
@@ -33,20 +34,17 @@ assumption it would never matter:
 > `most_played` is invariant to half-life, so its column is a control — if it
 > moves, something is leaking.
 
-It moved. Baseline nDCG drifted **0.270 → 0.339** across a half-life sweep, and
-the baseline cannot depend on a parameter it does not use.
+It moved: baseline nDCG drifted **0.270 → 0.339** across a half-life sweep, and
+a baseline cannot depend on a parameter it does not use.
 
-The cause: `scored_tracks()` returns rows ordered by `score`. The rediscovery
-task holds out the top-50 most-played tracks, and where play counts *tie* at
-that cutoff, `head(50)` silently inherited the incoming row order. So the
-half-life decided which tracks were held out — the excluded set was a function
-of the model being evaluated, and the "baseline" was a different baseline at
-every setting.
+`scored_tracks()` returns rows ordered by `score`. The rediscovery task holds
+out the 50 most-played tracks, and where play counts *tie* at that cutoff,
+`head(50)` silently inherited the incoming order — so the half-life decided
+which tracks were held out. The excluded set was a function of the model being
+evaluated.
 
-The fix is one clause (`sort_values(["play_count", "video_id"])`) in the
-hold-out selection and in every strategy. The guard against it returning is
-four tests asserting that the excluded set, the ground truth, the baseline's
-picks and the baseline's *score* are all invariant to half-life:
+One clause fixes it (`sort_values(["play_count", "video_id"])`). Four tests
+stop it returning:
 
 ```python
 def test_baseline_score_is_independent_of_half_life(self, db):
@@ -55,44 +53,76 @@ def test_baseline_score_is_independent_of_half_life(self, db):
     assert len(scores) == 1, f"baseline nDCG moved with half-life: {scores}"
 ```
 
-The +28.7% figure had already been written into this README and committed. It
-was withdrawn rather than quietly edited, which is why the table above exists.
+The +28.7% had already been written into this README and committed. It was
+withdrawn rather than quietly edited.
 
-### The selection bias, and nested tuning
+### 1.2 Selection bias, and nested tuning
 
 With the leak closed the lift was +7.8% — but the half-life had been chosen by
-sweeping the same four splits the result was reported on. That makes the number
-an upper bound, not an estimate.
+sweeping the same four splits the result was reported on, making it an upper
+bound rather than an estimate.
 
-Nested protocol (`scripts/nested_eval.py`): split the timeline, select the
-half-life on the **earlier** splits, report on the **later** ones the selection
-never touched.
+Nested protocol (`scripts/nested_eval.py`): select the half-life on the
+**earlier** splits, report on the **later** ones the selection never touched.
+The gap is stark — on canonical tracks, the chosen setting scores **+22.1% on
+the dev splits** and the held-out splits are what the README reports.
 
-```
-SELECTION — on the 2 dev splits (2026-04, 2026-05)
- half_life  mean_baseline  mean_score  wins   lift
-         7         0.3588      0.4312   2/2  +20.2%
-        14         0.3588      0.4383   2/2  +22.1%     <- chosen
-        30         0.3588      0.3968   2/2  +10.6%
-       180         0.3588      0.3588   0/2    0.0%
+### 1.3 Duplicate uploads, and why they break implicit feedback
 
-REPORT — on 3 held-out splits (2026-06, 2026-07, 2026-08)
-     split  baseline  score    lift   win
-2026-06-01    0.2024 0.2749  +35.8%  True
-2026-07-01    0.4628 0.3386  -26.8%  False
-2026-08-01    0.2076 0.2760  +33.0%  True
+This is the correction worth reading, because it is invisible until you look
+for it and it biases the result in the direction that flatters the baseline.
 
-  mean lift  +1.9%      wins 2/3      sign-test p = 0.500
-```
+YouTube carries the same recording many times: the label's official video, the
+auto-generated `- Topic` audio, a lyric video, an extended cut. Each is a
+distinct `videoId`. To everything upstream they are distinct tracks.
 
-**+22.1% on the splits used to choose the parameter becomes +1.9% on splits
-that were not.** That gap is the whole lesson, and it is why the honest verdict
-is *no significant improvement over the most-played baseline*.
+That breaks implicit-feedback evaluation in two ways at once:
 
-### Why only five splits
+**It inflates nDCG.** Three uploads of one song that the user replays count as
+three separate hits. A model that surfaces one song three times scores like a
+model that surfaced three songs.
 
-Nine monthly boundaries fit in 363 days; four are unusable, and the reason is a
-property of the data rather than a threshold I picked:
+**It leaks the hold-out.** The rediscovery task removes the 50 most-played
+tracks precisely so the model cannot win by naming favourites. But a song whose
+plays are *split* across four uploads may sit below the cutoff on every one of
+them. Measured directly — of the 50 genuinely most-played songs, how many had
+at least one upload survive into the candidate pool?
+
+| split | true top-50 songs | leaked into raw pool | leaked after collapsing |
+|---|---:|---:|---:|
+| 2026-04-01 | 50 | 35 | 0 |
+| 2026-05-01 | 50 | 34 | 0 |
+| 2026-06-01 | 50 | 34 | 0 |
+| 2026-07-01 | 50 | 36 | 0 |
+| 2026-08-01 | 50 | 37 | 0 |
+
+**70% of the user's favourites were surviving a hold-out built to exclude
+them.** The "rediscovery" task was substantially not measuring rediscovery, and
+the beneficiary was the most-played baseline — which is why its nDCG falls from
+0.29–0.46 to 0.11–0.17 once the duplicates are merged.
+
+`canonical.py` collapses packaging variants of one recording and sums their
+plays: **3,570 tracks → 3,143 songs** (427 collapsed, 12%; 359 songs had more
+than one upload, the largest five).
+
+**The first implementation of this was itself wrong**, and the guard that
+caught it was a report of merges spanning different artists. Keying on
+normalised title alone fused *Die For You* by Joji with *Die For You* by The
+Weeknd, *Falling* by Harry Styles with *Falling* by Trevor Daniel, and 102
+other distinct-song pairs. The failure modes are not symmetric — an over-merge
+sums the play counts of different songs and puts the wrong track in a playlist,
+while an under-merge leaves a duplicate, which is the problem already present —
+so the artist is part of the key and the merge is deliberately conservative.
+Remixes, covers, live and instrumental versions keep their own identity.
+
+Residual cost, stated rather than hidden: an upload credited to a featured
+artist's channel does not merge with the same song on the lead artist's. The 7
+remaining cross-artist groups are case variants of one name (`AFUSIC`/`Afusic`).
+
+### 1.4 Why only five splits
+
+Nine monthly boundaries fit in 363 days; four are unusable, for a reason that
+is a property of the data rather than a threshold anyone picked:
 
 | split | train days | music tracks in train | reachable test truth |
 |---|---:|---:|---:|
@@ -106,68 +136,76 @@ property of the data rather than a threshold I picked:
 | 2026-07-01 | 290 | 2,929 | 296 |
 | 2026-08-01 | 321 | 3,138 | 496 |
 
-Music tracks jump **227 → 1,139** between March and April. The account's *music*
-listening effectively begins in March 2026 — the same weeks as the playlist
-bulk import in §4 — so the 363-day figure describes the **watch** history while
-the usable **music** history is about six months. Three held-out splits is the
-ceiling this dataset supports, and three splits cannot establish significance.
-A sign test would need a clean sweep to reach p < 0.05 at this n.
+Music tracks jump **227 → 1,139** between March and April — the account's music
+listening effectively begins in March 2026, the same weeks as the playlist bulk
+import in §4. The 363-day figure describes the **watch** history; the usable
+**music** history is about six months.
 
-## 2. The result, with its caveats attached
+Two of the five splits are spent selecting the half-life, leaving three to
+report on. **That is what caps this result**, see below.
+
+## 2. The result, and what it does not support
 
 ### Rediscovery — the task worth measuring
 
-Remove the training window's 50 most-played tracks from both the candidate pool
+Remove the training window's 50 most-played songs from both the candidate pool
 and the ground truth, then ask what else gets played. "Name the tracks he plays
 most" *is* the baseline; a model that agrees with it has recommended nothing.
 
-| | mean nDCG@20 | splits won | verdict |
-|---|---:|---:|---|
-| score (log1p × recency) | 0.297 | 2/3 | **not significant** |
-| most_played (baseline) | 0.291 | — | |
+Nested: half-life chosen on 2026-04 and 2026-05, reported on three later splits
+the selection never saw.
 
-`recall@20` is capped at **4.4%** by construction — 20 picks against 296–496
-reachable tracks — so it is for comparing strategies, never a headline. The
-ceiling is printed beside it.
+| split | baseline nDCG@20 | score nDCG@20 | lift | win |
+|---|---:|---:|---:|:--:|
+| 2026-06-01 | 0.122 | 0.211 | +73% | ✔ |
+| 2026-07-01 | 0.109 | 0.312 | +186% | ✔ |
+| 2026-08-01 | 0.172 | 0.367 | +113% | ✔ |
+| **mean** | **0.134** | **0.297** | **+121%** | **3/3** |
 
-At the 2026-06-01 split, `score` finds **20 tracks to `recency`'s 13** yet
-scores *lower* on nDCG (0.275 vs 0.320). nDCG grades by how often a track was
-actually replayed, so a few heavy-rotation finds beat many marginal ones. Hits
-and nDCG disagree, and the disagreement is the informative part.
+**And it is not statistically established.** With three held-out splits, a
+sign test's *best possible* p-value — a clean sweep, which this is — is
+**0.125**. No result at this sample size can reach p < 0.05; five held-out
+splits would be the minimum. The effect is large and consistent; the evidence
+is thin, and those are different claims.
+
+The honest summary: *a +121% lift winning every held-out split, which this
+dataset is too small to certify.* Not "a 121% improvement", and not "no
+improvement".
+
+`recall@20` is capped at ~4.4% by construction — 20 picks against 296–496
+reachable songs — so it compares strategies and is never a headline.
 
 ### Replay — the trivial task, kept as contrast
 
-Rank the catalogue by what gets played next, favourites included. Run as
-originally specified — precision@20 over the remaining 105 days — **every
-strategy scores 1.00**. A track played 50 times in nine months is certain to
-recur in the next three; a metric that cannot go up cannot rank anything. On
-the graded version of that same window the baseline *wins* (nDCG@20 0.578 vs
-0.528).
+Rank the catalogue by what gets played next, favourites included. Run as first
+specified — precision@20 over the remaining 105 days — **every strategy scores
+1.00**; a track played 50 times in nine months is certain to recur in the next
+three. On the graded version of that window the baseline *wins*.
 
-Bounding the horizon to 30 days and raising *k* to 50 restores discrimination:
+Bounded to 30 days at k=50, on canonical songs:
 
-| strategy | precision@50 | nDCG@50 | Spearman |
-|---|---:|---:|---:|
-| **score** | **0.96** | **0.566** | 0.404 |
-| most_played *(baseline)* | 0.86 | 0.548 | **0.479** |
-| cluster_diverse | 0.64 | 0.328 | — |
-| recency | 0.46 | 0.307 | 0.306 |
+| strategy | nDCG@50 | Spearman |
+|---|---:|---:|
+| **score** | **0.551** | 0.371 |
+| most_played *(baseline)* | 0.539 | **0.440** |
 
-This is the task the model most clearly wins, and it is the one that matters
-least — which is the point of keeping it.
+A +2.2% edge on the task where naming the favourites is nearly optimal — which
+is exactly why it is not the headline.
 
 ### Results that do not flatter the model
 
 - **Raw play count predicts future play volume better than the model does.**
-  Spearman **0.479 vs 0.404** over the whole catalogue. Recency weighting helps
-  the head of the list, which is what a playlist draws from, and hurts the tail.
-  If the goal were "predict every track's play count", the right move would be
-  to delete the recency term.
+  Spearman **0.440 vs 0.371** across the whole catalogue. Recency weighting
+  helps the head of the list, which is what a playlist draws from, and hurts
+  the tail. For "predict every song's play count", delete the recency term.
 - **`cluster_diverse` loses on both tasks.** It trades accuracy for variety
   deliberately — twenty Travis Scott tracks is a good prediction and a bad
   playlist — but as a predictor it is worse, and is reported as worse.
-- **Two design hypotheses were tested and rejected**, not quietly dropped: see
+- **Two design hypotheses were tested and rejected** rather than dropped: see
   §6 on removing the artist from the embedding, and on replacing it with genre.
+- **369 of 970 test songs at the June split were never seen in training.** No
+  strategy can recommend a song it has never heard of, so even rediscovery
+  measures re-ranking of a known library, not discovery of new music.
 
 ### No leakage
 
@@ -176,8 +214,8 @@ overlaps the test window, because if that fails every number above is
 meaningless.
 
 ```bash
-scripts/run.sh scripts/nested_eval.py    # the nested result
-scripts/run.sh scripts/final_numbers.py  # every other figure
+scripts/run.sh scripts/canonical_impact.py   # every figure in §1 and §2
+scripts/run.sh scripts/nested_eval.py        # the nested protocol alone
 ```
 
 ## 3. The data
@@ -197,7 +235,8 @@ One Google Takeout export, parsed into SQLite. Every figure is produced by
 | Playlist track rows | 11,475 (8,457 unique videos) |
 | YT Music library songs (with artist metadata) | 239 |
 | Music tracks, heuristics only | 2,858 (9.4% of unique videos) |
-| **Music tracks, heuristics ∪ `categoryId`** | **3,570** (11.7% of unique videos) |
+| Music tracks, heuristics ∪ `categoryId` | 3,570 (11.7% of unique videos) |
+| **Canonical songs** (duplicate uploads merged) | **3,143** |
 | **Music plays** | **10,539** (25.9% of all plays) |
 
 3,570 tracks is the number. Not 17,138, not 30,440 — those are *videos
@@ -349,8 +388,10 @@ repeats dominate every playlist. Travis Scott's "MY EYES" at 115 plays beats a
 20-play track by 5.75× raw but 1.57× after `log1p` — a real gap that does not
 crush the tail.
 
-`half_life = 14 days`, selected by nested tuning on dev splits only (§1). The
-lift it buys on splits the selection never saw is not significant.
+`half_life` is selected by nested tuning on dev splits only (§1) — 30 days on
+canonical songs. The lift it buys on splits the selection never saw is large
+and consistent, and below the significance threshold this sample size can
+reach.
 
 ### Clustering
 
@@ -461,7 +502,54 @@ Default cap is 8,000, leaving headroom. Configuring it above 10,000 raises
 `ValueError` — the ceiling is not purchasable and pretending otherwise in a
 config file would be a lie the code tells itself.
 
-## 8. Layout
+## 8. Write-back
+
+Writing is where the quota stops being theoretical:
+
+```
+playlists.insert        50
+playlistItems.insert    50  per track
+playlistItems.list       1  verification
+
+50-track playlist  =  50 + 50x50 + 1  =  2,551 units
+```
+
+That is a third of the daily cap for **one** playlist — about one a day, and an
+expensive mistake to undo. Four behaviours follow from the arithmetic rather
+than from taste:
+
+- **Dry-run is the default.** `--commit` is required to spend anything. The dry
+  run prints the ordered tracks, the count and the itemised cost, and refuses
+  up front if the write would exceed what is left today.
+- **Resume is not optional.** Quota can run out mid-playlist, so every accepted
+  track is recorded as it lands and a re-run inserts only what is missing. The
+  intended track list is persisted at creation, so a resume writes the playlist
+  it started rather than a freshly re-ranked one.
+- **Never a silent partial.** A `403 quotaExceeded` is not an exception — it is
+  a persisted `partial` row, a printed "written N of M", and a non-zero exit.
+- **The write verifies itself.** `playlistItems.list` costs 1 unit against
+  2,550; not checking would be false economy. A count mismatch is recorded as
+  `mismatch` rather than reported as success.
+
+New playlists are **private**; `--public` is opt-in and never the default.
+
+```bash
+taste-engine clusters                             # pick an id
+taste-engine write --cluster 34 --limit 50        # dry run, 0 units
+taste-engine write --cluster 34 --limit 50 --commit
+taste-engine write --resume 2 --commit            # continue a partial
+taste-engine write --rollback 2 --commit          # delete it (50 units)
+taste-engine written                              # what exists
+```
+
+Canonical songs (§1.3) matter here too: ranking songs rather than uploads took
+a 50-track playlist from **37 distinct songs to 48**. The two remaining repeats
+are an instrumental kept deliberately separate from its vocal version, and two
+fan-channel extended cuts that the conservative artist rule declines to merge.
+
+No test in the suite makes a live API call; `tests/fake_youtube.py` stands in.
+
+## 9. Layout
 
 ```
 src/taste_engine/
@@ -472,16 +560,20 @@ src/taste_engine/
   resolve.py         Phase 2 — batched videos.list + caching
   classify.py        Phase 2 — music filter + comparison table
   score.py           Phase 3 — implicit-feedback scoring
+  canonical.py       Phase 3 — merge duplicate uploads of one recording
   embed.py           Phase 3 — MiniLM + PCA + HDBSCAN
   cluster_eval.py    Phase 3 — clustering vs. the user's own playlists
   redact.py          pseudonymises playlist titles before publication
   recommend.py       Phase 3 — playlist strategies
-  evaluate.py        Phase 3 — replay + rediscovery hold-outs
+  evaluate.py        Phase 3 — replay + rediscovery hold-outs, nested tuning
+  auth.py            Phase 4 — OAuth (writing needs a user, not a key)
+  writer.py          Phase 4 — quota-aware, resumable, self-verifying write
+  cli.py             Phase 4 — the `taste-engine` command
 notebooks/01_eda.ipynb
-tests/               187 tests
+tests/               252 tests
 ```
 
-## 9. Running it
+## 10. Running it
 
 Built and run on **WSL Ubuntu**, Python 3.11 via `uv` (no sudo required).
 
@@ -500,7 +592,7 @@ python -m taste_engine.recommend               # candidate playlists
 python -m taste_engine.evaluate --both --test-days 30   # both tasks, §2
 scripts/run.sh scripts/nested_eval.py                   # the headline, §1
 scripts/run.sh scripts/final_numbers.py                 # every other figure
-python -m pytest -q                            # 187 tests
+python -m pytest -q                            # 252 tests
 ```
 
 The venv lives on the WSL filesystem (`~/.venvs/taste-engine`) while the repo
@@ -509,6 +601,26 @@ avoiding.
 
 Only `resolve.py` needs network and credentials; everything else runs offline
 and degrades to heuristic labels if you skip it.
+
+### Setting up write-back
+
+Reading needs only an API key. **Writing acts as the account holder, so it
+needs OAuth** — `youtube.readonly` cannot create playlists, and there is
+deliberately no fallback to the key.
+
+1. Google Cloud → APIs & Services → Credentials → Create credentials →
+   **OAuth client ID → Desktop app**.
+2. Download the JSON to `credentials.json` in the repo root. It is gitignored.
+3. First `--commit` opens a browser. Because the project is published but not
+   verified by Google, an **"unverified app"** interstitial appears: *Advanced
+   → Go to taste-engine (unsafe)*. That warning means Google has not reviewed
+   the app, not that the app is doing anything unusual — it is your own OAuth
+   client talking to your own account.
+4. The refresh token is saved to `token.json` (also gitignored). Published
+   rather than Testing means it does not expire after seven days.
+
+If `credentials.json` is missing, the writer fails naming the file and where to
+put it rather than falling back to an unauthenticated client.
 
 ### What this repo deliberately does not contain
 
@@ -526,12 +638,8 @@ It is public and built on one person's data, so:
 - **Track, artist and cluster names are shown as-is.** They are the substance
   of the analysis, and a notebook that hides them would not be worth reading.
 
-## 10. Not built
+## 11. Not built
 
-- **Write-back** (`writer.py`). Deliberate: review the evaluation numbers
-  before spending quota writing playlists. The `written_playlists` /
-  `written_tracks` tables are already in the schema. Dry-run will be the
-  default and `--commit` explicit.
 - **Mood clustering that is actually about mood.** `topicCategories` genres
   turned out too coarse (35 tags) to beat artist-keyed text on alignment.
   Audio features would be the real fix, and YouTube does not expose them.

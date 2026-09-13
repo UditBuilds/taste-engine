@@ -53,13 +53,13 @@ QUOTA_COSTS = {
 VIDEOS_LIST_BATCH = 50  # max IDs accepted per videos.list call
 
 # --- scoring ---------------------------------------------------------------
-# Tuned on the REDISCOVERY task (the one the product is for), not on replay.
-# Best mean nDCG@20 of the sweep: wins 3 of 4 splits, +7.8% over the
-# most-played baseline, but loses 27% at the fourth. No half-life wins all
-# four. With only 4 usable splits the sweep and the report share their data,
-# so treat +7.8% as an upper bound rather than an unbiased estimate.
-# Reproduce with: scripts/run.sh scripts/final_numbers.py
-RECENCY_HALF_LIFE_DAYS = 14.0
+# Selected by NESTED tuning on the rediscovery task: swept on the two earliest
+# usable splits, reported on three later ones the selection never saw. On
+# canonical songs that picks 30 days, for +121% mean nDCG@20 over the
+# most-played baseline, winning 3/3 held-out splits - an effect too large to
+# ignore and, at n=3, too small a sample to certify (sign-test floor 0.125).
+# Reproduce with: scripts/run.sh scripts/canonical_impact.py
+RECENCY_HALF_LIFE_DAYS = 30.0
 
 # --- evaluation ------------------------------------------------------------
 # Temporal hold-out boundary: train strictly before, test on/after.

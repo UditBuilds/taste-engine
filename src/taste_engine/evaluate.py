@@ -468,11 +468,16 @@ def nested_rediscovery(
     wins = int(held_frame["win"].sum())
     n = len(held_frame)
 
-    # Sign test against a coin flip. With n this small only a clean sweep is
-    # even nominally significant, which is itself worth stating.
+    # Sign test against a coin flip.
     p_value = sum(
         _n_choose_k(n, i) for i in range(wins, n + 1)
     ) / (2 ** n) if n else 1.0
+    # The best p this many splits can possibly produce - a clean sweep. At n=3
+    # that is 0.125, so "not significant" there means "this sample size cannot
+    # certify anything", not "no effect". Reporting the floor stops a large,
+    # consistent lift being written off as a null result.
+    p_floor = 1 / (2 ** n) if n else 1.0
+    underpowered = p_floor >= 0.05
 
     return {
         "status": "ok",
@@ -488,8 +493,41 @@ def nested_rediscovery(
         "wins": wins,
         "n": n,
         "sign_test_p": p_value,
+        "p_floor": p_floor,
+        "underpowered": underpowered,
         "significant": bool(p_value < 0.05),
+        "verdict": _verdict(wins, n, p_value, p_floor, mean_base, mean_score),
     }
+
+
+def _verdict(wins: int, n: int, p: float, p_floor: float, base: float, score: float) -> str:
+    """Say what the numbers support - no more, and no less.
+
+    Three outcomes worth distinguishing, because collapsing them into
+    significant/not-significant misreports two of them:
+      * certified improvement
+      * a consistent, possibly large lift that this n cannot certify
+      * no improvement
+    """
+    lift = (score - base) / base if base else 0.0
+    if p < 0.05:
+        return (
+            f"Improvement over the most-played baseline: {lift:+.0%}, "
+            f"{wins}/{n} splits, sign-test p = {p:.3f}."
+        )
+    if wins == n and p_floor >= 0.05:
+        need = 5  # 1/2**5 = 0.031, the first n whose clean sweep clears 0.05
+        return (
+            f"Lift of {lift:+.0%} winning {wins}/{n} splits, but NOT statistically "
+            f"established: with {n} held-out splits a clean sweep gives "
+            f"p = {p_floor:.3f}, so no result at this sample size can reach "
+            f"p < 0.05. At least {need} held-out splits would be needed. "
+            "The effect is consistent and large; the evidence is thin."
+        )
+    return (
+        f"No significant improvement over the most-played baseline "
+        f"({lift:+.0%}, {wins}/{n} splits, p = {p:.3f})."
+    )
 
 
 def _n_choose_k(n: int, k: int) -> int:

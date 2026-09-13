@@ -149,3 +149,60 @@ class TestNdcgGrading:
         many_small = ndcg_at_k(["s1", "s2", "s3"], relevance, 3)
         one_big = ndcg_at_k(["big"], relevance, 3)
         assert one_big > many_small
+
+
+class TestUnderpoweredIsNotTheSameAsNoEffect:
+    """A clean sweep of 3 splits cannot reach p < 0.05. Say that, not "no effect".
+
+    The sign test's floor at n is 1/2**n: 0.125 at n=3, 0.031 at n=5. Reporting
+    a large, consistent lift as "not significant" without that context reads as
+    "no improvement", which is a different and wrong claim.
+    """
+
+    def test_p_floor_is_reported(self, db):
+        from taste_engine.evaluate import nested_rediscovery
+
+        out = nested_rediscovery(db)
+        if out["status"] != "ok":
+            import pytest
+
+            pytest.skip("not enough usable splits in this database")
+        assert out["p_floor"] == 1 / (2 ** out["n"])
+
+    def test_three_splits_are_flagged_underpowered(self, db):
+        from taste_engine.evaluate import nested_rediscovery
+
+        out = nested_rediscovery(db)
+        if out["status"] != "ok" or out["n"] != 3:
+            import pytest
+
+            pytest.skip("this database does not yield 3 held-out splits")
+        assert out["underpowered"] is True
+        assert not out["significant"]
+
+    def test_a_clean_sweep_is_not_called_no_improvement(self, db):
+        from taste_engine.evaluate import nested_rediscovery
+
+        out = nested_rediscovery(db)
+        if out["status"] != "ok" or out["wins"] != out["n"]:
+            import pytest
+
+            pytest.skip("not a clean sweep on this database")
+        assert "NOT statistically established" in out["verdict"]
+        assert "No significant improvement" not in out["verdict"]
+
+    def test_verdict_wording_by_case(self):
+        from taste_engine.evaluate import _verdict
+
+        certified = _verdict(wins=5, n=5, p=0.031, p_floor=0.031, base=0.1, score=0.2)
+        assert certified.startswith("Improvement over")
+
+        sweep_small_n = _verdict(wins=3, n=3, p=0.125, p_floor=0.125,
+                                 base=0.134, score=0.297)
+        assert "NOT statistically established" in sweep_small_n
+        assert "3/3 splits" in sweep_small_n
+        assert "5 held-out splits" in sweep_small_n
+
+        genuinely_null = _verdict(wins=2, n=5, p=0.5, p_floor=0.031,
+                                  base=0.20, score=0.19)
+        assert genuinely_null.startswith("No significant improvement")

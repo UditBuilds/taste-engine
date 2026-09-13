@@ -22,6 +22,7 @@ from taste_engine.score import scored_tracks
 
 FMT = lambda v: f"{v:.4f}"  # noqa: E731
 conn = connect()
+SPLITS = ["2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-01"]
 
 print("=" * 76)
 print("1. HOW MUCH COLLAPSES")
@@ -39,36 +40,44 @@ print("\n" + "=" * 76)
 print("2. DID FAVOURITES LEAK PAST THE TOP-50 HOLD-OUT?")
 print("=" * 76)
 print("  A song whose plays split across uploads can sit below the cutoff on")
-print("  every one of them, surviving into the candidate pool it should have")
-print("  been removed from.\n")
-rows = []
-for split in ["2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-01"]:
-    from taste_engine.evaluate import rediscovery_split
+print("  every upload, surviving into the candidate pool the hold-out exists")
+print("  to clear. Measured directly: of the 50 genuinely most-played SONGS,")
+print("  how many had at least one upload survive into the raw pool?\n")
+from taste_engine.canonical import add_canonical_key
+from taste_engine.evaluate import rediscovery_split
 
-    raw_c, _, raw_ex = rediscovery_split(conn, split, 14, 50, 30, cluster=False,
-                                         canonical=False)
-    can_c, _, can_ex = rediscovery_split(conn, split, 14, 50, 30, cluster=False,
-                                         canonical=True)
-    # Plays held out, as a share of all plays in the training window.
-    raw_share = raw_c["play_count"].sum()
-    can_share = can_c["play_count"].sum()
+rows = []
+for split in SPLITS:
+    canon = scored_tracks(conn, end=split, as_of=split, canonical=True)
+    true_top = set(
+        canon.sort_values(["play_count", "video_id"], ascending=[False, True])
+        .head(50)["video_id"]
+    )
+    canon_keyed = add_canonical_key(canon)
+    key_of = dict(zip(canon_keyed["video_id"], canon_keyed["canonical_key"]))
+    top_keys = {key_of[v] for v in true_top if v in key_of}
+
+    raw_c, _, _ = rediscovery_split(conn, split, 14, 50, 30, cluster=False,
+                                    canonical=False)
+    can_c, _, _ = rediscovery_split(conn, split, 14, 50, 30, cluster=False,
+                                    canonical=True)
     rows.append({
         "split": split,
-        "raw_candidate_plays": int(raw_share),
-        "canon_candidate_plays": int(can_share),
-        "raw_top_candidate": int(raw_c["play_count"].max()),
-        "canon_top_candidate": int(can_c["play_count"].max()),
+        "true_top50": len(top_keys),
+        "leaked_raw": len(top_keys & set(add_canonical_key(raw_c)["canonical_key"])),
+        "leaked_canonical": len(top_keys & set(add_canonical_key(can_c)["canonical_key"])),
     })
 leak = pd.DataFrame(rows)
-print(leak.to_string(index=False))
-print("\n  `top_candidate` is the most-played track that survived the hold-out.")
-print("  Higher under `raw` means a bigger favourite leaked through.")
+leak["leak_rate"] = leak.leaked_raw / leak.true_top50
+print(leak.to_string(index=False, float_format=FMT))
+print(f"\n  mean leaked into the RAW pool: {leak.leaked_raw.mean():.1f} of 50 "
+      f"({leak.leak_rate.mean():.0%})   canonical: {leak.leaked_canonical.mean():.1f}")
 
 print("\n" + "=" * 76)
 print("3. REDISCOVERY, per split, raw vs canonical (half-life 14, k=20)")
 print("=" * 76)
 rows = []
-for split in ["2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-01"]:
+for split in SPLITS:
     rec = {"split": split}
     for label, canon in (("raw", False), ("canon", True)):
         try:
@@ -117,8 +126,9 @@ else:
     print(f"  wins          {out['wins']}/{out['n']}")
     print(f"  sign-test p   {out['sign_test_p']:.3f}")
     print()
-    print("  VERDICT:", "significant improvement" if out["significant"]
-          else "no significant improvement over the most-played baseline")
+    print(f"  p floor at n={out['n']}: {out['p_floor']:.3f}")
+    print()
+    print("  VERDICT:", out["verdict"])
 
 conn.close()
 print("\nDONE")
