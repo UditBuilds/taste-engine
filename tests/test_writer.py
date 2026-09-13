@@ -8,7 +8,13 @@ write that verifies itself.
 import pandas as pd
 import pytest
 
-from fake_youtube import FakeYouTube
+from fake_youtube import (
+    FakeHttpError,
+    FakeYouTube,
+    quota_exceeded,
+    transient_error,
+    unauthorized,
+)
 from taste_engine import writer
 from taste_engine.db import connect
 from taste_engine.quota import QuotaLedger
@@ -439,3 +445,152 @@ class TestModes:
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
         with pytest.raises(writer.WriteBlocked, match="after excluding favourites"):
             writer.plan(conn, cluster=1, limit=3, exclude_top=12)
+
+
+class TestRetry:
+    """The first live write (2026-09-13) hit a 409 SERVICE_UNAVAILABLE on the
+    second insert - an unhandled traceback, because every error path before
+    this only ever modelled 403 quotaExceeded. These pin the fix: transient
+    statuses retry with backoff and are charged per attempt; 403 quotaExceeded
+    and 401 never retry; and no failure, retryable or not, predicted or not,
+    ever leaves execute_write() without a persisted, resumable partial.
+    """
+
+    @pytest.fixture(autouse=True)
+    def no_real_sleep(self, monkeypatch):
+        self.slept = []
+        monkeypatch.setattr(writer.time, "sleep", lambda s: self.slept.append(s))
+
+    def test_retries_409_then_succeeds(self, env):
+        conn, ledger, _ = env
+        api = FakeYouTube(insert_errors={1: transient_error(409)})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(3))
+        report = writer.execute_write(conn, api, ledger, p)
+        assert report["status"] == "complete"
+        assert report["written"] == 3
+        assert api.insert_calls == 4  # 1 failed attempt + 3 successful inserts
+        assert len(self.slept) == 1
+
+    def test_retries_503_then_succeeds(self, env):
+        conn, ledger, _ = env
+        api = FakeYouTube(insert_errors={2: transient_error(503)})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(3))
+        report = writer.execute_write(conn, api, ledger, p)
+        assert report["status"] == "complete"
+        assert report["written"] == 3
+        assert api.insert_calls == 4
+
+    def test_backoff_doubles_and_stays_within_jitter_bounds(self, env):
+        conn, ledger, _ = env
+        api = FakeYouTube(insert_errors={i: transient_error(503) for i in range(1, 6)})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(1))
+        writer.execute_write(conn, api, ledger, p, verify_after=False)
+        assert len(self.slept) == 4  # 5 attempts -> 4 waits between them
+        for wait, nominal in zip(self.slept, [1.0, 2.0, 4.0, 8.0]):
+            assert nominal * 0.5 <= wait <= nominal * 1.5
+
+    def test_each_retry_attempt_is_separately_charged(self, env):
+        """Google bills a request whether or not it succeeds (quota.py's own
+        rule); a retry that skipped charging its failed attempts would
+        under-count real spend - the direction that risks the real cap."""
+        conn, ledger, _ = env
+        api = FakeYouTube(insert_errors={1: transient_error(409)})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(1))
+        writer.execute_write(conn, api, ledger, p, verify_after=False)
+        assert ledger.summary()["by_method"]["playlistItems.insert"] == 100
+
+    def test_exhausts_five_attempts_then_leaves_a_resumable_partial(self, env):
+        conn, ledger, _ = env
+        api = FakeYouTube(insert_errors={i: transient_error(503) for i in range(1, 6)})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(3))
+        report = writer.execute_write(conn, api, ledger, p)
+
+        assert report["status"] == "partial"
+        assert report["written"] == 0
+        assert report["stopped"]
+        assert api.insert_calls == 5
+        assert writer.get_row(conn, report["row_id"])["status"] == "partial"
+
+        api2 = FakeYouTube()
+        api2.playlists_store[report["playlist_id"]] = {"privacyStatus": "private"}
+        api2.items_store[report["playlist_id"]] = []
+        resumed = writer.execute_write(conn, api2, ledger, p, row_id=report["row_id"])
+        assert resumed["written"] == 3
+        assert resumed["status"] == "complete"
+
+    def test_arbitrary_unexpected_exception_leaves_a_resumable_partial(self, env):
+        """Not shaped like an HttpError at all - the general guarantee, not a
+        quota-specific one."""
+        conn, ledger, _ = env
+        api = FakeYouTube(insert_errors={2: ValueError("boom - wholly unpredicted")})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(3))
+        report = writer.execute_write(conn, api, ledger, p)
+
+        assert report["status"] == "partial"
+        assert report["written"] == 1
+        assert "boom" in report["stopped"]
+        assert api.insert_calls == 2  # not retried: unrecognised failures don't wait
+        assert writer.get_row(conn, report["row_id"])["status"] == "partial"
+
+        api2 = FakeYouTube()
+        api2.playlists_store[report["playlist_id"]] = {"privacyStatus": "private"}
+        api2.items_store[report["playlist_id"]] = list(p["tracks"].video_id[:1])
+        resumed = writer.execute_write(conn, api2, ledger, p, row_id=report["row_id"])
+        assert resumed["written"] == 3
+        assert resumed["status"] == "complete"
+
+    def test_never_retries_quota_exceeded(self, env):
+        conn, ledger, _ = env
+        api = FakeYouTube(insert_errors={1: quota_exceeded()})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(3))
+        report = writer.execute_write(conn, api, ledger, p)
+        assert api.insert_calls == 1
+        assert not self.slept
+        assert "quotaExceeded" in report["stopped"]
+        assert report["status"] == "partial"
+
+    def test_never_retries_401(self, env):
+        conn, ledger, _ = env
+        api = FakeYouTube(insert_errors={1: unauthorized()})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(2))
+        report = writer.execute_write(conn, api, ledger, p)
+        assert api.insert_calls == 1
+        assert not self.slept
+        assert report["status"] == "partial"
+
+    def test_create_retries_a_503_then_succeeds(self, env):
+        conn, ledger, _ = env
+        api = FakeYouTube(create_errors={1: transient_error(503)})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(2))
+        report = writer.execute_write(conn, api, ledger, p)
+        assert report["status"] == "complete"
+        assert api.created == 2  # one failed attempt + one success
+
+    def test_verify_retries_a_502_then_succeeds(self, env):
+        conn, ledger, _ = env
+        api = FakeYouTube(list_errors={1: transient_error(502)})
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(2))
+        report = writer.execute_write(conn, api, ledger, p)
+        assert report["verified"] == {
+            "checked": True, "remote": 2, "expected": 2, "match": True
+        }
+        assert api.list_calls == 2
+
+    def test_rollback_retries_a_409_then_succeeds(self, env):
+        conn, ledger, api = env
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(2))
+        report = writer.execute_write(conn, api, ledger, p)
+        api.delete_errors = {1: transient_error(409)}
+        result = writer.rollback(conn, api, ledger, report["row_id"])
+        assert result["deleted_remote"] is True
+        assert api.delete_calls == 2
+
+    def test_rollback_treats_404_as_already_gone(self, env):
+        conn, ledger, api = env
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(2))
+        report = writer.execute_write(conn, api, ledger, p)
+        api.delete_errors = {1: FakeHttpError(404, "playlistNotFound")}
+        result = writer.rollback(conn, api, ledger, report["row_id"])
+        assert result["deleted_remote"] is False
+        assert result["already_absent"] is True
+        assert writer.get_row(conn, report["row_id"])["status"] == "rolled_back"

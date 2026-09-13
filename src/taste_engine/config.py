@@ -93,6 +93,20 @@ STRICT_MUSIC = True
 STRICT_MAX_SECONDS = 15 * 60
 STRICT_MIN_SECONDS = 45
 
+# --- write-back retry policy -------------------------------------------------
+# First live write (2026-09-13): playlistItems.insert returned 409
+# SERVICE_UNAVAILABLE on the second insert. The error path only handled 403
+# quotaExceeded, so it reached _insert_track as an unhandled traceback - 289
+# tests passed because every mock only ever simulated the failure we predicted.
+# Retried: 409, 500, 502, 503, 504, and socket/connection-level errors (the
+# request never reached Google, so quota.py's own refund rule applies).
+# Never retried: 403 quotaExceeded (no amount of waiting creates quota) or 401
+# (an expired/revoked token needs a human, not a delay).
+WRITE_RETRY_ATTEMPTS = 5
+WRITE_RETRY_INITIAL_DELAY_S = 1.0
+WRITE_RETRY_MAX_DELAY_S = 16.0
+WRITE_RETRYABLE_STATUSES = {409, 500, 502, 503, 504}
+
 # --- duration-based second-pass merge ---------------------------------------
 # The artist-keyed canonical rule is conservative and under-merges when a label
 # uploads a song under its own channel while the `- Topic` twin sits under the

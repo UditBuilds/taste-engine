@@ -37,6 +37,16 @@ back empty. **Always prefix:**
 MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' wsl.exe -d Ubuntu-24.04 -- bash scripts/run.sh ...
 ```
 
+**This varies by how the session was launched — verify, don't assume.** A
+2026-09-13 session found its Bash tool already running natively inside
+WSL Ubuntu (`uname -a` showed the WSL2 kernel directly, `python3`/`bash`
+resolved under `/usr/bin`) rather than Git Bash. In that case the prefix
+above is unnecessary — `wsl.exe` is reachable via interop but re-entering the
+same distro from inside it is redundant at best. Run `uname -a` once at the
+start of a session; if it reports a Linux/WSL2 kernel directly, skip the
+prefix and call `bash scripts/run.sh ...` (or the venv python) directly. If
+it reports something else (MSYS/MinGW), use the prefix.
+
 ### Trap 2 — heredocs mangle backslash escapes
 
 Writing Python through `<<'PYEOF'` corrupts `\n`, `\b`, `\d` inside string
@@ -112,9 +122,11 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
 - **Measure, don't assert.** Every claim in the README maps to a script.
 - **Report the failure rate, not just the wins.** False-merge rates, inert
   guards, and things that did not work are stated explicitly.
-- **Never claim verification that did not happen.** §8 says write-back is
-  mock-tested only because no live write has been confirmed. Change that line
-  only when a real run is reported.
+- **Never claim verification that did not happen.** §8 said write-back was
+  mock-tested only, and that line stayed until a real run was reported —
+  which happened 2026-09-13; §8 now documents the live 409, the fix, and the
+  write that verified it. Keep applying the same rule from here: no status
+  line changes on the strength of a plan or a passing test suite alone.
 - **Don't change a rule unilaterally.** Propose it, measure its impact on the
   headline, and let him decide. `STRICT_MUSIC` shipped as default-off first.
 - **Withdraw wrong numbers in public.** The +28.7% and +7.8% figures stayed in
@@ -124,30 +136,41 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
 
 ## State
 
-- 289 tests pass. Phases 1–4 built.
+- 301 tests pass. Phases 1–4 built.
 - Takeout parsed; all 30,440 videos resolved (609 units spent, quota ledger has
   the record).
-- **No live write has happened.** OAuth `run_local_server` cannot open a
-  browser on headless WSL; Udit runs `--commit` himself.
+- **Live write-back has now run.** The first `--commit` against the real
+  account (2026-09-13) hit `HttpError 409 SERVICE_UNAVAILABLE` from
+  `playlistItems.insert` on the second insert — an unhandled traceback,
+  because the error path only ever handled `403 quotaExceeded`. Three partial
+  playlists (13, 3, 2 of 45 tracks; 1,050 units) landed on the real account
+  before anyone looked. Fixed: `_call_with_retry` in `writer.py` backs off
+  409/500/502/503/504/socket errors with jitter, never retries 403
+  quotaExceeded or 401, and any insert failure — predicted or not — now ends
+  in a persisted resumable partial instead of a crash (README §8). All three
+  junk rows were rolled back (150 units, no retries needed), and a clean
+  45-track `--cluster-name "T-Series"` write completed and verified — the
+  retry fired for real mid-write and recovered transparently. `token.json`
+  is already a valid cached credential, so nothing here needed a browser;
+  `run_local_server` still needs one for a *first* consent on a fresh machine.
 - `data/` is entirely gitignored: Takeout, `taste.db`, embeddings, alias map,
   contamination sample.
 
 ### Known open items
 
-1. **Live write-back unverified.** Blocked on Udit running `--commit`.
-2. **3 duplicate pairs survive** a 45-track Hindi-film playlist (45 distinct by
+1. **3 duplicate pairs survive** a 45-track Hindi-film playlist (45 distinct by
    key, 42 to the eye). A label "Full Video" genuinely runs longer than its
    Topic twin — `Chammak Challo` 4:06 vs 3:48 — so duration cannot merge them
    and widening the tolerance would break everything else.
-3. **`Talwiinder - KAMMO JI`** needs a leading-artist strip, which is riskier
+2. **`Talwiinder - KAMMO JI`** needs a leading-artist strip, which is riskier
    than it looks (must not eat titles legitimately containing a dash).
-4. **Clusters are artist-shaped, not mood-shaped.** Genre embeddings were
+3. **Clusters are artist-shaped, not mood-shaped.** Genre embeddings were
    tested and rejected (ARI 0.397 vs 0.627); `topicCategories` is too coarse at
    35 tags. Audio features would be the real fix and YouTube does not expose
    them.
-5. **§1.4's split table** predates the strict filter; caveated in place rather
+4. **§1.4's split table** predates the strict filter; caveated in place rather
    than re-run.
-6. **Rediscover mode needs pool depth** — a ~90-song cluster asked for 50
+5. **Rediscover mode needs pool depth** — a ~90-song cluster asked for 50
    degrades into fan re-uploads by the 27th.
 
 ## Repo shape

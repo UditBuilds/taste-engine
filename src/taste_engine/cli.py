@@ -35,13 +35,18 @@ def cmd_write(args) -> int:
         if args.rollback is not None:
             row = writer.get_row(conn, args.rollback)
             print(f"Will DELETE playlist {row['playlist_id']} ({row['title']!r}) "
-                  f"and forget {row['written']} tracks. Cost: 50 units.")
+                  f"and forget {row['written']} tracks. Cost: 50 units "
+                  "(more if a transient API error forces a retry).")
             if not args.commit:
                 print("\nDry run - pass --commit to actually delete.")
                 return 0
             result = writer.rollback(conn, _service(), ledger, args.rollback)
-            print(f"Deleted {result['playlist_id']}; row {result['row_id']} "
-                  "marked rolled_back.")
+            if result["already_absent"]:
+                print(f"Playlist {result['playlist_id']} was already gone; "
+                      f"row {result['row_id']} marked rolled_back.")
+            else:
+                print(f"Deleted {result['playlist_id']}; row {result['row_id']} "
+                      "marked rolled_back.")
             return 0
 
         # --- plan -----------------------------------------------------------
@@ -113,6 +118,13 @@ def cmd_write(args) -> int:
         return 1
     except QuotaExceeded as exc:
         print(f"quota: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - last resort: never a raw traceback here.
+        # writer.py already converts every insert/create/delete/verify failure
+        # into a persisted partial + a WriteBlocked/QuotaExceeded above; this
+        # is defense in depth for anything that isn't. Ctrl-C must still work,
+        # so this is Exception, not BaseException.
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
         conn.close()

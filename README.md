@@ -288,6 +288,22 @@ cannot certify either (§2). What the sequence demonstrates is not a good
 recommender; it is a harness that kept finding its own errors, five times,
 including twice after a number had already been written down and committed.
 
+**A seventh failure, and why it isn't row 7.** The first live `--commit`
+(2026-09-13) never touched the rediscovery number, so it does not belong in
+the table above — but it belongs in this sequence. `playlistItems.insert`
+returned `HttpError 409 SERVICE_UNAVAILABLE` on the second track of the first
+playlist, and the code raised it as an unhandled traceback: the 289-test
+suite passed because every mock in it, `tests/fake_youtube.py` included, only
+ever simulated the one failure anyone had predicted, `403 quotaExceeded`.
+Three partial playlists landed on the real account before anyone looked. The
+six rows above were all caught by the harness before they shipped. This one
+was not — it was caught by the YouTube API, in production, after the fact.
+§8 has the fix, the numbers, and the write that validated it for real. The
+point worth keeping here is the shape of the miss: every defect above came
+from testing an assumption someone had thought to state. This one came from
+an assumption nobody stated, because nobody had reason to doubt it — quota
+errors were handled, so "errors are handled" felt covered. It wasn't.
+
 ## 2. The result, and what it does not support
 
 ### Rediscovery — the task worth measuring
@@ -629,9 +645,10 @@ cannot be purchased. It resets at midnight US/Pacific — not local midnight.
 | `playlists.insert` | 50 | |
 | `search.list` | 100 | avoided entirely — we already have IDs |
 
-A 100-track playlist write costs **5,000 units**: half a day's budget for one
-playlist. So the budget is a design constraint, not a footnote, and
-`QuotaLedger` enforces it in code rather than in a comment:
+A 100-track playlist write costs **5,000 units** at minimum — more if a
+transient API error forces a retry, since every physical attempt is charged
+whether or not it succeeds (§8). So the budget is a design constraint, not a
+footnote, and `QuotaLedger` enforces it in code rather than in a comment:
 
 - every spend is written to a SQLite `quota_log` keyed by US/Pacific day, so it
   survives a crash or restart;
@@ -648,23 +665,25 @@ config file would be a lie the code tells itself.
 
 ## 8. Write-back
 
-> **Status: exercised against mocks only.** Every behaviour below is covered by
-> the test suite (`tests/test_writer.py`, 41 tests, `tests/fake_youtube.py`
-> standing in for the API), and the dry-run path has been run repeatedly
-> against the real database. **No playlist has been written to a live YouTube
-> account yet** — the OAuth consent flow needs a browser, and
-> `run_local_server` cannot open one on headless WSL. Until a real run is
-> confirmed, treat the quota arithmetic and the resume/verify logic as
-> *designed and unit-tested*, not as *proven in production*.
+> **Status: run live.** The test suite (`tests/test_writer.py`, 53 tests,
+> `tests/fake_youtube.py` standing in for the API) covers every behaviour
+> below. The first live `--commit` (2026-09-13) found a defect no mock had
+> modelled — see below — and after the fix, a full write has completed
+> against the real account and verified clean: 45 tracks, `playlistItems.list`
+> confirming 45. Rollback and verify have both now run for real: three junk
+> rows were deleted live, and the clean write's count was confirmed against
+> the real API. **Resume has not** — every live write this session either
+> completed in one pass or was deleted outright, so the resume path is still
+> mock-tested only.
 
 Writing is where the quota stops being theoretical:
 
 ```
 playlists.insert        50
-playlistItems.insert    50  per track
+playlistItems.insert    50  per track (more per track if a retry fires)
 playlistItems.list       1  verification
 
-50-track playlist  =  50 + 50x50 + 1  =  2,551 units
+50-track playlist  =  50 + 50x50 + 1  =  2,551 units, at minimum
 ```
 
 That is a third of the daily cap for **one** playlist — about one a day, and an
@@ -678,14 +697,47 @@ than from taste:
   track is recorded as it lands and a re-run inserts only what is missing. The
   intended track list is persisted at creation, so a resume writes the playlist
   it started rather than a freshly re-ranked one.
-- **Never a silent partial.** A `403 quotaExceeded` is not an exception — it is
-  a persisted `partial` row, a printed "written N of M", and a non-zero exit.
+- **Never a silent partial.** No insert failure — quota exhaustion, a
+  transient error that exhausts its retries, or anything nobody anticipated —
+  reaches the caller as an exception. Each ends the same way: a persisted
+  `partial` row, a printed "written N of M", and a non-zero exit.
 - **The write verifies itself.** `playlistItems.list` costs 1 unit against
   2,550; not checking would be false economy. A count mismatch is recorded as
   `mismatch` rather than reported as success. (Verified against a mock that
-  deliberately drops every third insert; not yet against the live API.)
+  deliberately drops every third insert, and against the live API on the
+  clean write below — the three earlier live attempts never reached
+  verification; each stopped mid-insert first.)
 
 New playlists are **private**; `--public` is opt-in and never the default.
+
+### The first live write
+
+The first `--commit` against the real account hit `HttpError 409
+SERVICE_UNAVAILABLE` from `playlistItems.insert` on the second track of the
+first playlist. The error path only handled `403 quotaExceeded`, so the 409
+came up through `_insert_track` as an unhandled traceback — 289 tests passed
+because `tests/fake_youtube.py` had never been asked to simulate anything
+else. Three partial playlists (13, 3 and 2 of 45 tracks) landed on the real
+account before the gap was found; rolling all three back cost exactly 150
+units, no retries needed.
+
+The fix retries `409`, `500`, `502`, `503`, `504` and socket/connection
+errors with jittered exponential backoff — 5 attempts, 1s doubling to 16s —
+applied to every live call (create, insert, delete, verify), not just the one
+that broke: rollback shares the identical risk and was about to run live
+minutes later. It never retries `403 quotaExceeded` or `401` — no delay
+creates quota or refreshes a token. Every physical attempt is charged,
+retried or not, per `quota.py`'s existing rule that Google bills on receipt,
+so **the quota arithmetic above is a floor, not an exact figure**: a track
+that exhausts every retry can cost up to 250 units instead of 50. Any insert
+failure, predicted or not, now ends the same way quota exhaustion always
+has — a persisted partial and a clean non-zero exit, never a raw traceback.
+
+The next live write validated the fix rather than just exercising it under
+test: inserting the third track of the clean 45-track "T-Series" playlist hit
+a transient error, retried once, and succeeded — invisibly, from the caller's
+side. The playlist wrote in full (45 of 45) and verified clean against
+`playlistItems.list`.
 
 ```bash
 taste-engine clusters                                    # see what exists
@@ -749,7 +801,7 @@ src/taste_engine/
   writer.py          Phase 4 — quota-aware, resumable, self-verifying write
   cli.py             Phase 4 — the `taste-engine` command
 notebooks/01_eda.ipynb
-tests/               289 tests
+tests/               301 tests
 ```
 
 ## 10. Running it
@@ -771,7 +823,7 @@ python -m taste_engine.recommend               # candidate playlists
 python -m taste_engine.evaluate --both --test-days 30   # both tasks, §2
 scripts/run.sh scripts/nested_eval.py                   # the headline, §1
 scripts/run.sh scripts/final_numbers.py                 # every other figure
-python -m pytest -q                            # 289 tests
+python -m pytest -q                            # 301 tests
 ```
 
 The venv lives on the WSL filesystem (`~/.venvs/taste-engine`) while the repo

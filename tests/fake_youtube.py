@@ -25,6 +25,15 @@ def quota_exceeded() -> FakeHttpError:
     return FakeHttpError(403, "quotaExceeded: The request cannot be completed.")
 
 
+def unauthorized() -> FakeHttpError:
+    return FakeHttpError(401, "Invalid Credentials")
+
+
+def transient_error(status: int, message: str = "transient failure") -> FakeHttpError:
+    """A retryable-shaped failure: 409, 500, 502, 503, 504."""
+    return FakeHttpError(status, message)
+
+
 class _Request:
     def __init__(self, fn, kwargs):
         self._fn, self._kwargs = fn, kwargs
@@ -62,17 +71,37 @@ class FakeYouTube:
     quotaExceeded, which is how a mid-write quota exhaustion is simulated.
     `drop_every` silently discards every Nth insert, so verification has
     something real to catch.
+
+    `insert_errors` / `create_errors` / `delete_errors` / `list_errors` map a
+    1-based physical call number to an exception to raise on that call only -
+    so a retry sequence can be scripted precisely: `{1: transient_error(409)}`
+    fails once then succeeds, `{1: ..., 2: ..., 3: ..., 4: ..., 5: ...}`
+    exhausts all 5 attempts. Checked before `fail_inserts_after`/`drop_every`,
+    so existing tests using only those are unaffected.
     """
 
-    def __init__(self, fail_inserts_after: int | None = None, drop_every: int | None = None):
+    def __init__(
+        self,
+        fail_inserts_after: int | None = None,
+        drop_every: int | None = None,
+        insert_errors: dict[int, Exception] | None = None,
+        create_errors: dict[int, Exception] | None = None,
+        delete_errors: dict[int, Exception] | None = None,
+        list_errors: dict[int, Exception] | None = None,
+    ):
         self.playlists_store: dict[str, dict] = {}
         self.items_store: dict[str, list[str]] = {}
         self.insert_calls = 0
         self.list_calls = 0
         self.created = 0
+        self.delete_calls = 0
         self.deleted: list[str] = []
         self.fail_inserts_after = fail_inserts_after
         self.drop_every = drop_every
+        self.insert_errors = dict(insert_errors or {})
+        self.create_errors = dict(create_errors or {})
+        self.delete_errors = dict(delete_errors or {})
+        self.list_errors = dict(list_errors or {})
 
     # --- resources ---
     def playlists(self):
@@ -84,6 +113,8 @@ class FakeYouTube:
     # --- implementations ---
     def _create_playlist(self, part=None, body=None):
         self.created += 1
+        if self.created in self.create_errors:
+            raise self.create_errors[self.created]
         pid = f"PL_fake_{self.created}"
         snippet = (body or {}).get("snippet", {})
         status = (body or {}).get("status", {})
@@ -96,6 +127,9 @@ class FakeYouTube:
         return {"id": pid, "snippet": snippet, "status": status}
 
     def _delete_playlist(self, id=None):
+        self.delete_calls += 1
+        if self.delete_calls in self.delete_errors:
+            raise self.delete_errors[self.delete_calls]
         self.deleted.append(id)
         self.playlists_store.pop(id, None)
         self.items_store.pop(id, None)
@@ -103,6 +137,8 @@ class FakeYouTube:
 
     def _insert_item(self, part=None, body=None):
         self.insert_calls += 1
+        if self.insert_calls in self.insert_errors:
+            raise self.insert_errors[self.insert_calls]
         if (
             self.fail_inserts_after is not None
             and self.insert_calls > self.fail_inserts_after
@@ -122,6 +158,8 @@ class FakeYouTube:
 
     def _list_items(self, part=None, playlistId=None, maxResults=50, pageToken=None):
         self.list_calls += 1
+        if self.list_calls in self.list_errors:
+            raise self.list_errors[self.list_calls]
         items = self.items_store.get(playlistId, [])
         start = int(pageToken or 0)
         page = items[start : start + maxResults]

@@ -21,7 +21,9 @@ all of them load-bearing rather than decorative:
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -169,7 +171,8 @@ def render_plan(p: dict, ledger: QuotaLedger | None = None) -> str:
         f"    {INSERT_METHOD:<24}{p['breakdown'][INSERT_METHOD]:>7,}"
         f"   ({p['count']} x {config.QUOTA_COSTS[INSERT_METHOD]})",
         f"    {LIST_METHOD:<24}{p['breakdown'][LIST_METHOD]:>7,}   (verification)",
-        f"    {'TOTAL':<24}{p['units']:>7,}",
+        f"    {'TOTAL':<24}{p['units']:>7,}   (floor - a retry can add up to "
+        f"{(config.WRITE_RETRY_ATTEMPTS - 1) * config.QUOTA_COSTS[INSERT_METHOD]}/track)",
     ]
     if ledger is not None:
         remaining = ledger.remaining()
@@ -296,9 +299,52 @@ def _insert_track(service, playlist_id: str, video_id: str, position: int):
     ).execute()
 
 
+def _status_of(exc: Exception) -> int | None:
+    return getattr(getattr(exc, "resp", None), "status", None)
+
+
 def _is_quota_error(exc: Exception) -> bool:
-    status = getattr(getattr(exc, "resp", None), "status", None)
-    return status == 403 and "quota" in str(exc).lower()
+    return _status_of(exc) == 403 and "quota" in str(exc).lower()
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """409/500/502/503/504 and anything that never reached Google.
+
+    403 quotaExceeded and 401 are deliberately excluded even though neither
+    appears in `WRITE_RETRYABLE_STATUSES`: no delay creates quota, and no
+    delay refreshes a token a human hasn't reauthorised.
+    """
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    return _status_of(exc) in config.WRITE_RETRYABLE_STATUSES
+
+
+def _call_with_retry(fn, *, ledger: QuotaLedger, method: str, note: str):
+    """Call `fn()`, retrying transient failures with jittered backoff.
+
+    Every physical attempt is charged before it runs, success or not:
+    `quota.py`'s own rule is that a response Google sent back - even an
+    error - has already been billed, so a retry that skipped paying for its
+    earlier attempts would under-count real spend, the direction that risks
+    overrunning the actual daily cap rather than just this ledger's copy of
+    it. A socket/connection error that never reached Google is the one case
+    `QuotaLedger.spend` refunds on its own.
+
+    `QuotaExceeded` (this ledger's own pre-flight guard, not an API response)
+    propagates on the first attempt it appears - retrying it would just spend
+    down quota `check()` already said we don't have.
+    """
+    delay = config.WRITE_RETRY_INITIAL_DELAY_S
+    for attempt in range(1, config.WRITE_RETRY_ATTEMPTS + 1):
+        ledger.check(method)
+        try:
+            with ledger.spend(method, note=f"{note} try {attempt}"):
+                return fn()
+        except Exception as exc:  # noqa: BLE001 - decide retry/raise, never swallow
+            if not _is_retryable(exc) or attempt == config.WRITE_RETRY_ATTEMPTS:
+                raise
+        time.sleep(delay * (0.5 + random.random()))
+        delay = min(delay * 2, config.WRITE_RETRY_MAX_DELAY_S)
 
 
 def execute_write(
@@ -331,18 +377,24 @@ def execute_write(
     # --- create the remote playlist, unless resuming one that exists ---
     if not playlist_id:
         try:
-            ledger.check(CREATE_METHOD)
+            created = _call_with_retry(
+                lambda: service.playlists().insert(
+                    part="snippet,status",
+                    body={
+                        "snippet": {"title": p["title"], "description": p["description"]},
+                        "status": {"privacyStatus": row["privacy"]},
+                    },
+                ).execute(),
+                ledger=ledger, method=CREATE_METHOD, note=f"playlist row {row_id}",
+            )
         except QuotaExceeded as exc:
             _set(conn, row_id, status=STATUS_PENDING)
             raise WriteBlocked(f"not enough quota to create the playlist: {exc}") from None
-        with ledger.spend(CREATE_METHOD, note=f"playlist row {row_id}"):
-            created = service.playlists().insert(
-                part="snippet,status",
-                body={
-                    "snippet": {"title": p["title"], "description": p["description"]},
-                    "status": {"privacyStatus": row["privacy"]},
-                },
-            ).execute()
+        except Exception as exc:  # noqa: BLE001 - creation failed even after retries
+            _set(conn, row_id, status=STATUS_PENDING)
+            raise WriteBlocked(
+                f"could not create the playlist for row {row_id}: {exc}"
+            ) from exc
         playlist_id = created["id"]
         units += config.QUOTA_COSTS[CREATE_METHOD]
         _set(conn, row_id, playlist_id=playlist_id, units_spent=units,
@@ -360,32 +412,37 @@ def execute_write(
     stopped = None
     for position, track in outstanding:
         try:
-            ledger.check(INSERT_METHOD)
+            item = _call_with_retry(
+                lambda: _insert_track(service, playlist_id, track.video_id, position),
+                ledger=ledger, method=INSERT_METHOD, note=f"row {row_id} pos {position}",
+            )
+            # Record immediately, before bumping the counters below: a resume
+            # reads written_tracks (not this row's `written` column), so the
+            # two must never be allowed to say something different happened.
+            conn.execute(
+                "INSERT OR REPLACE INTO written_tracks "
+                "(playlist_row, video_id, position, item_id, written_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (row_id, track.video_id, position, (item or {}).get("id"), _now()),
+            )
+            conn.commit()
+            units += config.QUOTA_COSTS[INSERT_METHOD]
+            written += 1
+            _set(conn, row_id, written=written, units_spent=units)
         except QuotaExceeded as exc:
             stopped = str(exc)
             break
-        try:
-            with ledger.spend(INSERT_METHOD, note=f"row {row_id} pos {position}"):
-                item = _insert_track(service, playlist_id, track.video_id, position)
-        except Exception as exc:  # noqa: BLE001
-            if _is_quota_error(exc):
-                stopped = f"API returned quotaExceeded: {exc}"
-                break
-            _set(conn, row_id, status=STATUS_PARTIAL, written=written,
-                 units_spent=units)
-            raise
-
-        units += config.QUOTA_COSTS[INSERT_METHOD]
-        written += 1
-        # Record immediately: this row is what makes a resume correct.
-        conn.execute(
-            "INSERT OR REPLACE INTO written_tracks "
-            "(playlist_row, video_id, position, item_id, written_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (row_id, track.video_id, position, (item or {}).get("id"), _now()),
-        )
-        conn.commit()
-        _set(conn, row_id, written=written, units_spent=units)
+        except Exception as exc:  # noqa: BLE001 - any insert failure ends the write
+            # cleanly rather than crashing: retries exhausted, a non-retryable
+            # status, or something wholly unanticipated all land here and
+            # leave a resumable partial through the status update below,
+            # exactly like quota exhaustion always has. General, not
+            # quota-specific - that generality is the fix.
+            stopped = (
+                f"API returned quotaExceeded: {exc}" if _is_quota_error(exc)
+                else f"insert of {track.video_id} at position {position} failed: {exc}"
+            )
+            break
 
     complete = written >= len(tracks)
     _set(conn, row_id,
@@ -421,32 +478,26 @@ def verify(conn: sqlite3.Connection, service, ledger: QuotaLedger, row_id: int) 
     if not row["playlist_id"]:
         raise WriteBlocked(f"row {row_id} has no remote playlist to verify")
 
-    try:
-        ledger.check(LIST_METHOD)
-    except QuotaExceeded:
-        return {"checked": False, "reason": "no quota left to verify"}
-
     remote = 0
     page = None
-    with ledger.spend(LIST_METHOD, note=f"verify row {row_id}"):
-        response = service.playlistItems().list(
-            part="id", playlistId=row["playlist_id"], maxResults=50
-        ).execute()
-    remote += len(response.get("items", []))
-    page = response.get("nextPageToken")
-
-    while page:
-        try:
-            ledger.check(LIST_METHOD)
-        except QuotaExceeded:
-            return {"checked": False, "reason": "quota ran out mid-verification"}
-        with ledger.spend(LIST_METHOD, note=f"verify row {row_id}"):
-            response = service.playlistItems().list(
-                part="id", playlistId=row["playlist_id"], maxResults=50,
-                pageToken=page,
-            ).execute()
-        remote += len(response.get("items", []))
-        page = response.get("nextPageToken")
+    try:
+        while True:
+            response = _call_with_retry(
+                lambda: service.playlistItems().list(
+                    part="id", playlistId=row["playlist_id"], maxResults=50,
+                    **({"pageToken": page} if page else {}),
+                ).execute(),
+                ledger=ledger, method=LIST_METHOD, note=f"verify row {row_id}",
+            )
+            remote += len(response.get("items", []))
+            page = response.get("nextPageToken")
+            if not page:
+                break
+    except QuotaExceeded:
+        reason = "no quota left to verify" if remote == 0 else "quota ran out mid-verification"
+        return {"checked": False, "reason": reason}
+    except Exception as exc:  # noqa: BLE001 - a failed verification isn't a failed write
+        return {"checked": False, "reason": f"verification call failed: {exc}"}
 
     expected = int(row["written"])
     ok = remote == expected
@@ -456,18 +507,38 @@ def verify(conn: sqlite3.Connection, service, ledger: QuotaLedger, row_id: int) 
 
 
 def rollback(conn: sqlite3.Connection, service, ledger: QuotaLedger, row_id: int) -> dict:
-    """Delete the remote playlist and forget its tracks. Costs 50 units."""
+    """Delete the remote playlist and forget its tracks.
+
+    Costs 50 units per attempt - more if a transient error forces a retry.
+    """
     row = get_row(conn, row_id)
     playlist_id = row["playlist_id"]
 
     deleted = False
+    already_absent = False
     if playlist_id:
-        ledger.check(DELETE_METHOD)
-        with ledger.spend(DELETE_METHOD, note=f"rollback row {row_id}"):
-            service.playlists().delete(id=playlist_id).execute()
-        deleted = True
+        try:
+            _call_with_retry(
+                lambda: service.playlists().delete(id=playlist_id).execute(),
+                ledger=ledger, method=DELETE_METHOD, note=f"rollback row {row_id}",
+            )
+            deleted = True
+        except Exception as exc:  # noqa: BLE001
+            if _status_of(exc) == 404:
+                # Already gone - a prior attempt, or deleted by hand. The
+                # local row is still junk either way; finish clearing it
+                # rather than erroring out over a playlist that no longer
+                # exists on either side.
+                already_absent = True
+            else:
+                raise
 
     conn.execute("DELETE FROM written_tracks WHERE playlist_row = ?", (row_id,))
     _set(conn, row_id, status=STATUS_ROLLED_BACK, written=0, playlist_id=None)
     conn.commit()
-    return {"row_id": row_id, "deleted_remote": deleted, "playlist_id": playlist_id}
+    return {
+        "row_id": row_id,
+        "deleted_remote": deleted,
+        "playlist_id": playlist_id,
+        "already_absent": already_absent,
+    }
