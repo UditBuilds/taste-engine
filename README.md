@@ -8,10 +8,15 @@ inside a 10,000-unit/day API budget.
 It is not a playlist transfer tool and not an LLM wrapper. Those exist. This
 learns from behaviour: what got replayed, how recently, and in what company.
 
-**Result:** precision@50 of **0.81 vs 0.74** for a most-played baseline,
-averaged over six monthly temporal hold-outs, on 9,134 music plays across 363
-days. It wins at 6 of 6 splits. The honest caveats are in
-[Evaluation](#5-evaluation) and they are not buried.
+**Result:** on **rediscovery** — predicting what gets played again *after
+removing the 50 tracks already in heavy rotation* — the model scores nDCG@20 of
+**0.324 vs 0.252** for a most-played baseline, winning **4 of 4** hold-out
+splits. The baseline wins none.
+
+That is the number that matters. On the easier "will he replay his favourites"
+task the same model beats the same baseline by **+0.6%**, because that task is
+rigged in the baseline's favour by construction. Both are reported in
+[Evaluation](#5-evaluation), along with a metric the model loses on.
 
 ---
 
@@ -169,9 +174,45 @@ The Weeknd, Drake, Future, Metro Boomin, Don Toliver, Kendrick Lamar, a
 one-off listens can be labelled noise instead of being forced into a mood.
 
 **These are artist clusters, not mood clusters.** The embedding text contains
-the artist name and MiniLM keys on it heavily. Genre is a fair proxy for mood,
-but this is worth naming plainly rather than calling them moods. The
-`topicCategories` genre labels from the API pass are the principled fix.
+the artist name and MiniLM keys on it heavily.
+
+### Does removing the artist help? No — measurably not
+
+The obvious fix is to build the embedding from title and genre alone. To test
+it rather than assume it, the clusterings are scored against an **external**
+ground truth: the user's own 48 hand-curated playlists, restricted to tracks
+filed in exactly one of them. A silhouette score would only measure how tidy a
+clustering looks in the space it was built from, which is circular; a human
+saying "these belong together" is not.
+
+```bash
+python -m taste_engine.cluster_eval
+```
+
+| embedding text | ARI | NMI | purity | coverage | noise |
+|---|---:|---:|---:|---:|---:|
+| **`"{title} - {artist}"`** | **0.609** | **0.598** | **0.651** | **61%** | 40% |
+| `"{title}"`, artist stripped | 0.547 | 0.538 | 0.556 | 39% | **62%** |
+| `"{title}. {genres}"` | *pending* | | | | *needs `resolve.py`* |
+
+Stripping the artist makes every metric worse and pushes noise from 40% to
+62%. The reason is visible in the data: song titles alone are `TBH`, `20 Min`,
+`Ready`, `Snooze` — near-zero semantic signal for a sentence encoder. The
+artist string was not noise crowding out the signal; on this corpus it was
+carrying most of it.
+
+Removing it properly also means stripping the `"Artist - "` prefix from the
+title, not just dropping the channel — otherwise the artist survives inside the
+title and nothing is actually tested. `coverage` is reported so a clustering
+cannot win by labelling everything noise.
+
+**The honest caveat on this result:** the ground truth is itself somewhat
+artist-shaped — several of the 48 playlists are single-artist collections
+(`The Weeknd - Essential Playlist`, `Juice WRLD Unreleased`). So it partly
+rewards artist clustering by construction. It is still the best external label
+available, and if the goal is generating playlists like the ones this user
+actually makes, artist-coherent clusters are the right target. The genre
+variant is the real test of the hypothesis and it is blocked on the API key.
 
 ## 5. Evaluation
 
@@ -181,20 +222,57 @@ no test-window play — not for scoring, not for clustering, not for tuning.
 because if that fails every number here is meaningless.
 
 ```bash
-python -m taste_engine.evaluate --robustness
+python -m taste_engine.evaluate --both --test-days 30
 ```
 
-### The specified metric saturates
+### Two tasks, and only one of them is a recommender
 
-Run exactly as originally specified — precision@20, train to 2026-06-01, test
-on the remaining 105 days — **the baseline scores 1.00**. Not because the model
-is good: a track played 50 times in nine months is certain to be played again
-in the next three. A metric that cannot go up cannot rank anything.
+**Replay.** Rank the user's catalogue by what they will play next. Run exactly
+as first specified — precision@20, test on the remaining 105 days — **the
+baseline scores 1.00**. A track played 50 times in nine months is certain to
+recur in the next three.
 
-Shortening the horizon to 30 days and raising *k* to 50 restores
-discrimination. That is the configuration reported below.
+The first instinct is to blame the metric and make it harder: shorten the
+horizon to 30 days, raise *k* to 50. That does restore discrimination, and the
+model wins — by **+0.6% nDCG**. But it is fixing the wrong thing. The task
+itself is the problem. "Name the tracks he plays most" *is* the baseline; a
+model that agrees with it has not recommended anything.
 
-### Result — 6 monthly splits, 30-day horizon, k=50
+**Rediscovery.** Remove the training window's 50 most-played tracks from both
+the candidate pool and the ground truth, then ask what else gets played. This
+is the question the product exists to answer — what do you come back to that
+you were not already hammering — and it is the one the baseline should be bad
+at.
+
+| task | best strategy | baseline | lift |
+|---|---:|---:|---:|
+| Replay (nDCG@50, 30-day) | 0.530 | 0.527 | **+0.6%** |
+| **Rediscovery (nDCG@20)** | **0.324** | **0.252** | **+28.7%** |
+
+Mean over hold-out splits; rediscovery over the 4 with enough reachable truth
+to discriminate. On rediscovery the model beats the baseline at **4 of 4**
+splits and the baseline wins **0**.
+
+### Rediscovery detail
+
+| strategy | mean nDCG@20 | mean recall@20 | splits beating baseline |
+|---|---:|---:|---:|
+| **score** | **0.324** | **0.054** | **4 / 4** |
+| most_played *(baseline)* | 0.252 | 0.047 | 0 / 4 |
+| recency | 0.248 | 0.035 | 3 / 4 |
+| cluster_diverse | 0.210 | 0.045 | 1 / 4 |
+
+`recall@20` is small by construction: 20 picks against ~430 reachable tracks
+caps it at 4.7%. It is reported for comparability across strategies, not as a
+headline. The ceiling is printed alongside it.
+
+One thing the table shows that a single metric would hide: at the 2026-06-01
+split, `score` gets **20 hits to `recency`'s 14** yet scores *lower* on nDCG
+(0.247 vs 0.370). nDCG is graded by how many times a track was actually
+replayed, so a few heavy-rotation finds beat many marginal ones. Hits and nDCG
+genuinely disagree, and the disagreement is the useful part.
+
+### Replay result — 6 monthly splits, 30-day horizon, k=50
 
 | half-life | splits won | mean precision@50 | baseline | mean nDCG lift | worst split |
 |---:|---:|---:|---:|---:|---:|
@@ -225,15 +303,20 @@ play count", the right answer would be to drop the recency term.
 
 ### Also honest
 
-- One user, one year. Six hold-out splits from 363 days of a single person's
-  listening is a small sample, and a 7pp precision gap is ~3 tracks in 50.
+- One user, one year. Four to six hold-out splits from 363 days of one
+  person's listening is a small sample. The rediscovery margin is wide enough
+  to be worth reporting; it is not a significance test.
 - 401 of 874 test tracks at the June split were never seen in training. No
-  strategy can recommend a track it has never seen; the metric measures
-  re-ranking of a known library, not discovery.
-- `cluster_diverse` scores *worse* than plain `score` (0.66 vs 0.96
-  precision@50). It trades accuracy for variety deliberately — twenty Travis
-  Scott tracks is a good prediction and a bad playlist — but it is a worse
-  predictor and is reported as one.
+  strategy can recommend a track it has never heard of, so even rediscovery
+  measures re-ranking of a known library — not discovery of new music. That
+  would need a catalogue this dataset does not contain.
+- `cluster_diverse` is the *worst* strategy on both tasks (0.210 nDCG@20 on
+  rediscovery, against 0.324 for plain `score`). It trades accuracy for
+  variety deliberately — twenty Travis Scott tracks is a good prediction and a
+  bad playlist — but as a predictor it loses, and it is reported as losing.
+- The half-life was tuned on the replay task, then reused for rediscovery
+  without re-tuning. Tuning it on rediscovery would likely help and would also
+  be fitting the set it is scored on.
 
 ## 6. Quota engineering
 
@@ -276,10 +359,11 @@ src/taste_engine/
   classify.py        Phase 2 — music filter + comparison table
   score.py           Phase 3 — implicit-feedback scoring
   embed.py           Phase 3 — MiniLM + PCA + HDBSCAN
+  cluster_eval.py    Phase 3 — clustering vs. the user's own playlists
   recommend.py       Phase 3 — playlist strategies
-  evaluate.py        Phase 3 — temporal hold-out
+  evaluate.py        Phase 3 — replay + rediscovery hold-outs
 notebooks/01_eda.ipynb
-tests/               142 tests
+tests/               174 tests
 ```
 
 ## 8. Running it
@@ -295,9 +379,11 @@ python -m taste_engine.parse_takeout           # ~15s, no network
 python -m taste_engine.classify                # heuristic coverage
 python -m taste_engine.score                   # top tracks
 python -m taste_engine.embed                   # clusters
+python -m taste_engine.cluster_eval            # clustering comparison, §4
 python -m taste_engine.recommend               # candidate playlists
-python -m taste_engine.evaluate --robustness   # the table in §5
-python -m pytest -q                            # 142 tests
+python -m taste_engine.evaluate --both --test-days 30   # both tasks, §5
+python -m taste_engine.evaluate --robustness            # half-life choice
+python -m pytest -q                            # 174 tests
 ```
 
 The venv lives on the WSL filesystem (`~/.venvs/taste-engine`) while the repo
@@ -309,10 +395,14 @@ or credentials.
 
 ## 9. Not built
 
-- **Write-back** (`writer.py`). Deliberate: the build order says review the
-  evaluation number before spending quota writing playlists, and the
-  `written_playlists` / `written_tracks` tables are already in the schema for
-  it. Dry-run will be the default and `--commit` explicit.
+- **Write-back** (`writer.py`). Deliberate: review the evaluation numbers
+  before spending quota writing playlists. The `written_playlists` /
+  `written_tracks` tables are already in the schema. Dry-run will be the
+  default and `--commit` explicit.
+- **The genre embedding variant.** Coded and tested (`build_corpus(mode=
+  "title_genre")`), blocked only on `YT_API_KEY`. It is the real test of
+  whether artist-keying is the problem; the artist-stripped variant alone
+  says it is not.
 - **Cross-service transfer** (Spotify ↔ YouTube). Blocked by Spotify's 25-user
   development-mode cap.
 - **LLM-generated track lists.** They hallucinate songs and still leave you

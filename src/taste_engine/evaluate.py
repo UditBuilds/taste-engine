@@ -161,6 +161,150 @@ def evaluate(
     }
 
 
+def rediscovery_split(
+    conn: sqlite3.Connection,
+    split_date: str,
+    half_life: float | None = None,
+    exclude_top: int = 50,
+    test_days: int | None = None,
+    cluster: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, set[str]]:
+    """Hold out the obvious favourites, then ask what else gets played.
+
+    The replay task is rigged in the baseline's favour by construction: a
+    track played 50 times in nine months will be played again, and naming it
+    is not a recommendation. Removing the training window's top `exclude_top`
+    tracks from both the candidate pool and the ground truth leaves the
+    question the product actually has to answer - what does he come back to
+    that he was not already hammering?
+    """
+    train, test = split_frames(
+        conn, split_date, half_life, cluster=cluster, test_days=test_days
+    )
+    obvious = set(
+        train.sort_values("play_count", ascending=False)
+        .head(exclude_top)["video_id"]
+    )
+    candidates = train[~train["video_id"].isin(obvious)].reset_index(drop=True)
+    truth = test[~test["video_id"].isin(obvious)].reset_index(drop=True)
+    return candidates, truth, obvious
+
+
+def evaluate_rediscovery(
+    conn: sqlite3.Connection,
+    split_date: str | None = None,
+    k: int = 20,
+    half_life: float | None = None,
+    strategies: list[str] | None = None,
+    exclude_top: int = 50,
+    test_days: int | None = None,
+) -> dict:
+    """recall@k and nDCG@k on the non-obvious tracks.
+
+    `recall@k` is measured against *reachable* truth - test tracks that appear
+    in the candidate pool at all. A track first played after the split cannot
+    be retrieved by any strategy, so counting it as a miss would measure the
+    catalogue, not the ranking.
+    """
+    split_date = split_date or config.EVAL_SPLIT_DATE
+    names = strategies or list(STRATEGIES)
+
+    candidates, truth, obvious = rediscovery_split(
+        conn, split_date, half_life, exclude_top, test_days
+    )
+    if candidates.empty or truth.empty:
+        raise ValueError(f"empty candidate or truth set at split {split_date}")
+
+    truth_ids = set(truth["video_id"])
+    reachable = truth_ids & set(candidates["video_id"])
+    relevance = dict(zip(truth["video_id"], truth["play_count"].astype(float)))
+    # Only reachable tracks can contribute to the ideal ordering.
+    reachable_relevance = {v: relevance[v] for v in reachable}
+
+    ceiling = min(k, len(reachable)) / len(reachable) if reachable else 0.0
+
+    rows = []
+    for name in names:
+        ids = recommend(candidates, n=k, strategy=name)["video_id"].tolist()
+        hits = [v for v in ids if v in reachable]
+        rows.append(
+            {
+                "strategy": name,
+                "hits": len(hits),
+                f"recall@{k}": round(len(hits) / len(reachable), 4) if reachable else 0.0,
+                f"precision@{k}": round(precision_at_k(ids, reachable, k), 4),
+                f"ndcg@{k}": round(ndcg_at_k(ids, reachable_relevance, k), 4),
+            }
+        )
+
+    return {
+        "task": "rediscovery",
+        "split_date": split_date,
+        "test_days": test_days,
+        "k": k,
+        "exclude_top": exclude_top,
+        "half_life": half_life or config.RECENCY_HALF_LIFE_DAYS,
+        "excluded": len(obvious),
+        "candidates": len(candidates),
+        "truth": len(truth_ids),
+        "reachable": len(reachable),
+        "ceiling": round(ceiling, 4),
+        "results": pd.DataFrame(rows).sort_values(f"ndcg@{k}", ascending=False),
+    }
+
+
+def rediscovery_robustness(
+    conn: sqlite3.Connection,
+    splits: list[str] | None = None,
+    k: int = 20,
+    half_life: float | None = None,
+    exclude_top: int = 50,
+    test_days: int | None = None,
+    min_reachable: int = 20,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The rediscovery comparison at every usable split."""
+    splits = splits or [
+        "2026-03-01", "2026-04-01", "2026-05-01", "2026-06-01", "2026-07-01",
+    ]
+    rows = []
+    for split in splits:
+        try:
+            report = evaluate_rediscovery(
+                conn, split, k, half_life, exclude_top=exclude_top, test_days=test_days
+            )
+        except ValueError:
+            continue
+        if report["reachable"] < min_reachable:
+            continue
+        r = report["results"].set_index("strategy")
+        record = {"split": split, "reachable": report["reachable"]}
+        for name in r.index:
+            record[f"{name}_ndcg"] = r.loc[name, f"ndcg@{k}"]
+            record[f"{name}_recall"] = r.loc[name, f"recall@{k}"]
+        rows.append(record)
+
+    detail = pd.DataFrame(rows)
+    if detail.empty:
+        return detail, detail
+
+    summary = pd.DataFrame(
+        [
+            {
+                "strategy": name,
+                f"mean_ndcg@{k}": detail[f"{name}_ndcg"].mean(),
+                f"mean_recall@{k}": detail[f"{name}_recall"].mean(),
+                "beats_baseline": int(
+                    (detail[f"{name}_ndcg"] > detail["most_played_ndcg"]).sum()
+                ),
+                "splits": len(detail),
+            }
+            for name in STRATEGIES
+            if f"{name}_ndcg" in detail.columns
+        ]
+    ).sort_values(f"mean_ndcg@{k}", ascending=False)
+    return detail, summary
+
+
 def sweep(
     conn: sqlite3.Connection,
     metric: str = "ndcg",
@@ -314,6 +458,33 @@ def _print_report(report: dict) -> None:
               f"vs {base_n:.3f} baseline ({lift:+.1%}).")
 
 
+def _print_rediscovery(report: dict) -> None:
+    k = report["k"]
+    print(f"Rediscovery  train < {report['split_date']} <= test, "
+          f"top-{report['exclude_top']} favourites removed")
+    print(f"  candidates        {report['candidates']:>8,} "
+          f"(excluded {report['excluded']})")
+    print(f"  truth             {report['truth']:>8,} "
+          f"(reachable: {report['reachable']:,})")
+    print(f"  ceiling@{k}{'':<8}{report['ceiling']:>8.1%}  "
+          f"(k={k} picks from {report['reachable']:,} reachable)")
+    print()
+    print(report["results"].to_string(index=False))
+
+    results = report["results"].set_index("strategy")
+    ncol = f"ndcg@{k}"
+    base = results.loc["most_played", ncol]
+    best = results[ncol].idxmax()
+    print()
+    if best == "most_played":
+        print(f"  Baseline still wins on {ncol} ({base:.3f}). "
+              "The model does not rediscover better than play count.")
+    else:
+        lift = (results.loc[best, ncol] - base) / base if base else float("inf")
+        print(f"  Best on {ncol}: {best} at {results.loc[best, ncol]:.3f} "
+              f"vs {base:.3f} baseline ({lift:+.1%}).")
+
+
 def main(argv: list[str] | None = None) -> int:
     from .db import connect
 
@@ -321,6 +492,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--split", default=config.EVAL_SPLIT_DATE)
     parser.add_argument("-k", type=int, default=config.EVAL_K)
     parser.add_argument("--test-days", type=int, help="bound the test window")
+    parser.add_argument(
+        "--rediscovery", action="store_true",
+        help="score the non-obvious tracks instead of replay",
+    )
+    parser.add_argument(
+        "--exclude-top", type=int, default=50,
+        help="favourites removed from the rediscovery candidate pool",
+    )
+    parser.add_argument(
+        "--both", action="store_true", help="print replay and rediscovery side by side"
+    )
     parser.add_argument("--half-life", type=float)
     parser.add_argument("--sweep-half-life", action="store_true")
     parser.add_argument("--sweep-splits", action="store_true")
@@ -333,9 +515,29 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = connect()
     try:
-        _print_report(
-            evaluate(conn, args.split, args.k, args.half_life, test_days=args.test_days)
-        )
+        if args.rediscovery or args.both:
+            _print_rediscovery(
+                evaluate_rediscovery(
+                    conn, args.split, 20, args.half_life,
+                    exclude_top=args.exclude_top, test_days=args.test_days,
+                )
+            )
+            detail, summary = rediscovery_robustness(
+                conn, k=20, half_life=args.half_life,
+                exclude_top=args.exclude_top, test_days=args.test_days,
+            )
+            if not detail.empty:
+                print("\n\nRediscovery across splits")
+                print(summary.to_string(index=False,
+                                        float_format=lambda v: f"{v:.4f}"))
+            if args.both:
+                print("\n" + "=" * 72 + "\n")
+
+        if not args.rediscovery or args.both:
+            _print_report(
+                evaluate(conn, args.split, args.k, args.half_life,
+                         test_days=args.test_days)
+            )
 
         if args.sweep_half_life:
             print(f"\n\nHalf-life sweep ({args.metric}@{args.k})")

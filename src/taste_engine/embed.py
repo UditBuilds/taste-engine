@@ -85,18 +85,70 @@ def artist_from_channel(channel: str | None) -> str:
     return name
 
 
-def build_corpus(df: pd.DataFrame) -> list[str]:
-    """One embedding string per track."""
+CORPUS_MODES = ("title_artist", "title", "title_genre")
+
+
+def strip_artist_from_title(title: str, artist: str) -> str:
+    """Remove a leading 'Artist - ' prefix so the artist really is excluded.
+
+    Dropping the channel is not enough: most titles are written
+    'Travis Scott - MY EYES', so the artist survives inside the title itself.
+    """
+    if not artist or not title:
+        return title
+    lowered, prefix = title.lower(), artist.lower()
+    if lowered.startswith(prefix):
+        remainder = title[len(artist):].lstrip(" -–—:|")
+        return remainder or title
+    return title
+
+
+def build_corpus(df: pd.DataFrame, mode: str = "title_artist") -> list[str]:
+    """One embedding string per track.
+
+    * `title_artist` - "{title} - {artist}". MiniLM keys hard on the artist
+      name, so this yields artist clusters.
+    * `title` - artist removed from both the channel and the title prefix.
+    * `title_genre` - title plus Wikipedia genre labels from
+      `topicDetails.topicCategories`, artist excluded. Needs `resolve.py`.
+    """
+    if mode not in CORPUS_MODES:
+        raise ValueError(f"mode must be one of {CORPUS_MODES}, got {mode!r}")
+
+    channels = df.get("channel", pd.Series([None] * len(df), index=df.index))
+    genre_col = df.get("genres", pd.Series([[]] * len(df), index=df.index))
+
     texts = []
-    for title, channel in zip(df["title"], df.get("channel", pd.Series([None] * len(df)))):
+    for title, channel, genres in zip(df["title"], channels, genre_col):
         clean_title = normalise_title(title)
         artist = artist_from_channel(channel)
-        # Skip the artist when the title already leads with it.
-        if artist and clean_title.lower().startswith(artist.lower()):
-            texts.append(clean_title or artist)
-        else:
-            texts.append(f"{clean_title} - {artist}".strip(" -") or (clean_title or artist))
+
+        if mode == "title_artist":
+            if artist and clean_title.lower().startswith(artist.lower()):
+                texts.append(clean_title or artist)
+            else:
+                texts.append(
+                    f"{clean_title} - {artist}".strip(" -") or (clean_title or artist)
+                )
+            continue
+
+        bare = strip_artist_from_title(clean_title, artist)
+        if mode == "title":
+            texts.append(bare or clean_title)
+        else:  # title_genre
+            labels = list(genres) if isinstance(genres, (list, tuple)) else []
+            tags = ", ".join(_tidy_genre(g) for g in labels)
+            texts.append(f"{bare}. {tags}".strip(". ") if tags else (bare or clean_title))
     return texts
+
+
+def _tidy_genre(label: str) -> str:
+    """'Hip_hop_music' / 'Hip hop music' -> 'hip hop'."""
+    text = str(label).replace("_", " ").strip().lower()
+    for suffix in (" music", " genre"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+    return text.strip()
 
 
 def _cache_path(texts: list[str], model_name: str) -> Path:
@@ -190,6 +242,7 @@ def cluster_tracks(
     model_name: str = MODEL_NAME,
     use_cache: bool = True,
     n_components: int = PCA_COMPONENTS,
+    mode: str = "title_artist",
 ) -> pd.DataFrame:
     """Embed, cluster, and attach `cluster` plus `cluster_name` columns."""
     out = df.copy().reset_index(drop=True)
@@ -198,7 +251,7 @@ def cluster_tracks(
         out["cluster_name"] = pd.Series(dtype="object")
         return out
 
-    texts = build_corpus(out)
+    texts = build_corpus(out, mode=mode)
     out["embed_text"] = texts
     vectors = embed_texts(texts, model_name=model_name, use_cache=use_cache)
     out["cluster"] = cluster_embeddings(
