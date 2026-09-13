@@ -273,3 +273,105 @@ class TestDurationMerge:
             ("STAY", "The Kid LAROI - Topic", 9, "PT2M22S", ["Pop music"]),
         ])
         assert len(collapse(df)) == 2
+
+
+class TestLabelUploadTitles:
+    """Label uploads bury the song name in cast metadata; twins do not.
+
+    "Lyrical: Chammak Challo | Ra One | ShahRukh Khan" against a bare
+    "Chammak Challo" never produced the same normalised title, so the duration
+    pass never even compared them.
+    """
+
+    @pytest.mark.parametrize(
+        "label_title,plain",
+        [
+            ("Lyrical: Chammak Challo | Ra One | ShahRukh Khan | Kareena Kapoor",
+             "Chammak Challo"),
+            ("Lyrical : Jee Le Zaraa Song | Talaash | Aamir Khan, Rani Mukherjee",
+             "Jee Le Zaraa"),
+            ("Rockstar: Tum Ho (Lyrical Video) Song | Ranbir Kapoor | Nargis",
+             "Tum Ho"),
+            ("ANIMAL:Pehle Bhi Main(Full Video) | Ranbir Kapoor,Tripti Dimri",
+             "Pehle Bhi Main"),
+        ],
+    )
+    def test_label_upload_matches_its_plain_twin(self, label_title, plain):
+        """Cores must match; the artist differs, so the duration pass decides."""
+        a = canonical_key(label_title, "T-Series").partition("|")[2]
+        b = canonical_key(plain, "Pritam - Topic").partition("|")[2]
+        assert a == b
+
+    def test_first_segment_not_longest(self):
+        """Longest picks the cast list; first picks the song."""
+        from taste_engine.canonical import strip_pipe_metadata
+
+        assert strip_pipe_metadata(
+            "Zara Sa | 4K Music Video | Jannat | Emraan Hashmi"
+        ) == "Zara Sa"
+
+    def test_a_credit_list_is_never_mistaken_for_the_song(self):
+        """Taking the longest segment fused 'Pink Lips' with 'BABY DOLL',
+        two different songs sharing a composer credit."""
+        from taste_engine.canonical import strip_pipe_metadata
+
+        a = strip_pipe_metadata(
+            '"Sheila Ki Jawani" Full Song | Tees Maar Khan | Katrina Kaif, '
+            "Akshay Kumar | Vishal Dadlani, Sunidhi Chauhan"
+        )
+        assert "Sheila Ki Jawani" in a
+        assert "Vishal Dadlani" not in a
+
+    def test_single_word_first_segment_falls_back_to_longest(self):
+        from taste_engine.canonical import strip_pipe_metadata
+
+        # The publisher suffix is stripped too, so the result is the bare name.
+        assert strip_pipe_metadata("Aaj | Kal Ho Naa Ho Full Song") == "Kal Ho Naa Ho"
+
+    @pytest.mark.parametrize("title", ["Love Song", "Sad Song", "Song"])
+    def test_a_real_title_ending_in_song_survives(self, title):
+        """Only strip the suffix when two words remain."""
+        from taste_engine.canonical import strip_pipe_metadata
+
+        assert strip_pipe_metadata(title) == title
+
+    def test_publisher_song_suffix_is_stripped(self):
+        from taste_engine.canonical import strip_pipe_metadata
+
+        assert strip_pipe_metadata("Jee Le Zaraa Song") == "Jee Le Zaraa"
+
+
+class TestFeatureClauseInTheArtistHalf:
+    """`RE_FEAT` strips to end-of-string, which breaks standard VEVO naming.
+
+    'The Weeknd ft. Future - Double Fantasy' has the feature clause in the
+    *artist* half, so stripping to the end ate the song name and returned "".
+    Every such track fell back to its video id and could never merge.
+    """
+
+    @pytest.mark.parametrize(
+        "vevo,topic,artist",
+        [
+            ("The Weeknd ft. Future - Double Fantasy (Official Music Video)",
+             "Double Fantasy", "The Weeknd"),
+            ("Travis Scott feat. Young Thug & M.I.A. - FRANCHISE (Official Video)",
+             "FRANCHISE", "Travis Scott"),
+        ],
+    )
+    def test_song_name_survives_and_merges(self, vevo, topic, artist):
+        vevo_key = canonical_key(vevo, artist.replace(" ", "") + "VEVO")
+        topic_key = canonical_key(topic, f"{artist} - Topic")
+        assert vevo_key and vevo_key == topic_key
+
+    def test_a_trailing_feature_is_still_stripped(self):
+        assert canonical_key("Song ft. Somebody", "A - Topic") == \
+            canonical_key("Song", "A - Topic")
+
+    def test_a_bracketed_feature_is_still_stripped(self):
+        assert canonical_key("OUT WEST (feat. Young Thug)", "JACKBOYS - Topic") == \
+            canonical_key("OUT WEST", "JACKBOYS - Topic")
+
+    def test_no_longer_returns_empty(self):
+        assert canonical_key(
+            "The Weeknd ft. Future - Double Fantasy", "TheWeekndVEVO"
+        ) != ""

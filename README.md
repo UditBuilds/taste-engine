@@ -20,7 +20,7 @@ small to certify — and saying exactly that is the point.
 | first | **+28.7%**, 4/4 splits | the hold-out set itself varied with the half-life |
 | second | **+7.8%**, 3/4 splits | half-life tuned on the same splits it was reported on |
 | third | **+1.9%**, 2/3 splits | honest tuning — but measured on duplicate-inflated tracks |
-| **fourth** | **+128%**, 3/3 splits | duplicates collapsed, non-music filtered; **not certifiable at n=3** |
+| **fourth** | **+140%**, 3/3 splits | duplicates collapsed, non-music filtered; **not certifiable at n=3** |
 
 Two of those corrections made the number smaller. The third made it much
 bigger, because the bias was in the *baseline's* favour. Neither direction was
@@ -230,12 +230,63 @@ treated as a featured-artist marker, so **"Stay With Me" normalised to "stay"**
 and matched The Kid LAROI's "STAY", both 2:22. Bracketed `(with Drake)` was
 already handled earlier, so the rule was only ever eating ordinary English.
 
-**What it does not fix.** Five duplicate pairs survive in a 45-track Hindi-film
-playlist, all the same shape: `Lyrical: Chammak Challo | Ra One | ShahRukh
-Khan` against a bare `Chammak Challo`. The pipe-separated cast metadata means
-the two never produce the same normalised title, so the duration pass never
-compares them. A 45-track playlist is 45 distinct songs by the system's key and
-about 40 to the eye.
+**Label titles: fixed in normalisation, and the first attempt was wrong.**
+Indian label uploads bury the song name in cast metadata —
+`Lyrical: Chammak Challo | Ra One | ShahRukh Khan | Kareena Kapoor` against a
+bare `Chammak Challo` — so the two never produced the same normalised title and
+the duration pass never compared them. Splitting on `|` and stripping publisher
+prefixes (`Lyrical:`, `Full Video:`) and a trailing `Song` suffix fixes that.
+
+Keeping the **longest** segment was the obvious rule and is wrong on this
+corpus: a cast or composer credit is frequently longer than the song name, and
+it fused `Pink Lips` with `BABY DOLL` — two different songs whose longest
+segment was the same composer credit. These uploads put the song name first, so
+the **first** segment is used, falling back to the longest only when the first
+is a single word. The trailing-`Song` strip only fires when two words survive,
+so `Love Song` and `Sad Song` are untouched.
+
+**What it still does not fix.** Duration is the wrong discriminator for a label
+"Full Video" against its `- Topic` twin, because the video genuinely is longer:
+`Chammak Challo` is 4:06 on T-Series and 3:48 on Topic — an 18-second spread
+against a 3-second tolerance. Aligning the titles lets the two be *compared*;
+it does not make them merge. Raising the tolerance to cover 18 seconds would
+create false merges everywhere else, so these pairs remain split and are
+counted as such.
+
+### 1.7 What has been stable, and what has not
+
+Six measurements of the same quantity, each after fixing a defect found by the
+harness rather than by inspection:
+
+| # | rediscovery lift | what changed |
+|---|---:|---|
+| 1 | +28.7% | — (hold-out set varied with the half-life) |
+| 2 | +7.8% | tie-break made deterministic |
+| 3 | +1.9% | nested tuning: select on dev splits, report on held-out |
+| 4 | +121% | duplicate uploads collapsed |
+| 5 | +128% | non-music filtered, duration-merge pass |
+| 6 | **+139.7%** | feature-clause and label-title normalisation fixed |
+
+**The sign has never moved. The magnitude has moved every time.**
+
+The sixth measurement shows the mechanism plainly. Fixing the feature-clause
+bug merged `Double Fantasy` and `FRANCHISE` with their `- Topic` twins — both
+heavy rotation. With their plays summed they cross into the top-50 favourites
+and are *excluded* from the rediscovery pool, which strips strong material from
+the **baseline**. The model's score barely moved (0.3343 → 0.3312); the
+baseline fell (0.1466 → 0.1382), and the lift rose from +128% to +139.7%
+because of it. The same leak §1.3 describes, one layer further down.
+
+In all six measurements the model beats the most-played baseline on
+rediscovery. In none of them is the margin stable: it has ranged from +1.9% to
+over +120% depending on defects in the *measurement*, not changes to the
+*model*. The scoring function has not changed since the first version.
+
+That is the honest summary of this repo. A reader should take the direction
+seriously and the magnitude lightly — and should note that the sample size
+cannot certify either (§2). What the sequence demonstrates is not a good
+recommender; it is a harness that kept finding its own errors, five times,
+including twice after a number had already been written down and committed.
 
 ## 2. The result, and what it does not support
 
@@ -250,10 +301,10 @@ the selection never saw.
 
 | split | baseline nDCG@20 | score nDCG@20 | lift | win |
 |---|---:|---:|---:|:--:|
-| 2026-06-01 | 0.122 | 0.223 | +83% | ✔ |
-| 2026-07-01 | 0.112 | 0.392 | +251% | ✔ |
-| 2026-08-01 | 0.207 | 0.389 | +88% | ✔ |
-| **mean** | **0.147** | **0.334** | **+128%** | **3/3** |
+| 2026-06-01 | 0.135 | 0.223 | +64% | ✔ |
+| 2026-07-01 | 0.107 | 0.392 | +265% | ✔ |
+| 2026-08-01 | 0.172 | 0.379 | +121% | ✔ |
+| **mean** | **0.138** | **0.331** | **+140%** | **3/3** |
 
 **And it is not statistically established.** With three held-out splits, a
 sign test's *best possible* p-value — a clean sweep, which this is — is
@@ -288,7 +339,7 @@ is exactly why it is not the headline.
 ### Results that do not flatter the model
 
 - **Raw play count predicts future play volume better than the model does.**
-  Spearman **0.435 vs 0.382** across the whole catalogue. Recency weighting
+  Spearman **0.430 vs 0.358** across the whole catalogue. Recency weighting
   helps the head of the list, which is what a playlist draws from, and hurts
   the tail. For "predict every song's play count", delete the recency term.
 - **`cluster_diverse` loses on both tasks.** It trades accuracy for variety
@@ -329,7 +380,7 @@ One Google Takeout export, parsed into SQLite. Every figure is produced by
 | YT Music library songs (with artist metadata) | 239 |
 | Music tracks, heuristics only | 2,858 (9.4% of unique videos) |
 | Music tracks, heuristics ∪ `categoryId` | 3,570 (11.7% of unique videos) |
-| **Canonical songs** (duplicates merged, non-music filtered) | **2,929** |
+| **Canonical songs** (duplicates merged, non-music filtered) | **2,918** |
 | **Music plays** | **10,539** (25.9% of all plays) |
 
 3,570 tracks is the number. Not 17,138, not 30,440 — those are *videos
@@ -597,6 +648,15 @@ config file would be a lie the code tells itself.
 
 ## 8. Write-back
 
+> **Status: exercised against mocks only.** Every behaviour below is covered by
+> the test suite (`tests/test_writer.py`, 41 tests, `tests/fake_youtube.py`
+> standing in for the API), and the dry-run path has been run repeatedly
+> against the real database. **No playlist has been written to a live YouTube
+> account yet** — the OAuth consent flow needs a browser, and
+> `run_local_server` cannot open one on headless WSL. Until a real run is
+> confirmed, treat the quota arithmetic and the resume/verify logic as
+> *designed and unit-tested*, not as *proven in production*.
+
 Writing is where the quota stops being theoretical:
 
 ```
@@ -622,7 +682,8 @@ than from taste:
   a persisted `partial` row, a printed "written N of M", and a non-zero exit.
 - **The write verifies itself.** `playlistItems.list` costs 1 unit against
   2,550; not checking would be false economy. A count mismatch is recorded as
-  `mismatch` rather than reported as success.
+  `mismatch` rather than reported as success. (Verified against a mock that
+  deliberately drops every third insert; not yet against the live API.)
 
 New playlists are **private**; `--public` is opt-in and never the default.
 
@@ -688,7 +749,7 @@ src/taste_engine/
   writer.py          Phase 4 — quota-aware, resumable, self-verifying write
   cli.py             Phase 4 — the `taste-engine` command
 notebooks/01_eda.ipynb
-tests/               273 tests
+tests/               289 tests
 ```
 
 ## 10. Running it
@@ -710,7 +771,7 @@ python -m taste_engine.recommend               # candidate playlists
 python -m taste_engine.evaluate --both --test-days 30   # both tasks, §2
 scripts/run.sh scripts/nested_eval.py                   # the headline, §1
 scripts/run.sh scripts/final_numbers.py                 # every other figure
-python -m pytest -q                            # 273 tests
+python -m pytest -q                            # 289 tests
 ```
 
 The venv lives on the WSL filesystem (`~/.venvs/taste-engine`) while the repo

@@ -49,6 +49,60 @@ RE_VARIANT = re.compile(r"\b(?:" + "|".join(VARIANT_WORDS) + r")\b", re.I)
 RE_FEAT = re.compile(
     r"\b(?:feat|ft|featuring)\b\.?\s.*$", re.I
 )
+# Indian label uploads carry cast and film metadata after pipes:
+#   "Lyrical: Chammak Challo | Ra One | ShahRukh Khan | Kareena Kapoor"
+# while the auto-generated twin is just "Chammak Challo". Keeping the longest
+# pipe segment recovers the song name, because the name is almost always the
+# longest field and the rest are single names.
+RE_PIPE = re.compile(r"\s*\|\s*")
+# "Lyrical:", "Full Video:", "Song:" — publisher labels, not part of the name.
+RE_LEADING_LABEL = re.compile(
+    r"^\s*(?:lyrical|full\s+video|full\s+song|video\s+song|audio\s+song|"
+    r"song|official\s+video|full)\s*:\s*",
+    re.I,
+)
+# A film name glued to the front: "ANIMAL:Pehle Bhi Main", "Rockstar: Tum Ho".
+RE_FILM_PREFIX = re.compile(r"^\s*[A-Za-z][A-Za-z0-9'&. ]{0,18}:\s*")
+
+
+# "Jee Le Zaraa Song", "Tum Ho (Lyrical Video) Song" — a publisher suffix.
+RE_TRAILING_SONG = re.compile(
+    r"\s+(?:full\s+|video\s+|audio\s+|lyrical\s+)?song\s*$", re.I
+)
+
+
+def strip_pipe_metadata(raw: str) -> str:
+    """Recover the song name from a label upload's title.
+
+    **First segment, not longest.** Taking the longest looked reasonable and is
+    wrong on this corpus, because a cast or composer credit is often longer
+    than the song name:
+
+        "Sheila Ki Jawani" Full Song | Tees Maar Khan | Katrina Kaif,
+        Akshay Kumar | Vishal Dadlani, Sunidhi Chauhan
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ longest segment
+
+    That is not merely a miss: it fused "Pink Lips" with "BABY DOLL", two
+    different songs whose longest segment was the same composer credit. The
+    convention these uploads follow puts the song name first, so the first
+    segment is used, falling back to the longest only when the first is a
+    single word.
+    """
+    parts = [p.strip() for p in RE_PIPE.split(str(raw)) if p.strip()]
+    if len(parts) > 1:
+        raw = parts[0] if len(parts[0].split()) >= 2 else max(parts, key=len)
+    raw = RE_LEADING_LABEL.sub("", str(raw))
+    raw = RE_FILM_PREFIX.sub("", raw)
+
+    # Only when something substantial survives: "Love Song" and "Sad Song" are
+    # titles, "Jee Le Zaraa Song" is a title plus a publisher suffix. Two
+    # remaining words is the line.
+    trimmed = RE_TRAILING_SONG.sub("", raw)
+    if trimmed is not raw and len(trimmed.split()) >= 2:
+        raw = trimmed
+    return raw.strip()
+
+
 RE_BRACKETS = re.compile(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}")
 RE_NONWORD = re.compile(r"[^a-z0-9\s]")
 RE_SPACES = re.compile(r"\s+")
@@ -87,12 +141,27 @@ def canonical_key(title: str | None, channel: str | None = None) -> str:
     raw = str(title).strip()
     if not raw or raw.lower() == "nan":
         return ""
-    distinct_marker = bool(RE_DISTINCT.search(raw))
+    # Captured before the pipe strip rewrites `raw`: a "(Live)" or "(Remix)"
+    # marker can sit in a segment the strip discards, and searching the
+    # shortened string afterwards would lose it.
+    distinct_match = RE_DISTINCT.search(raw)
 
+    raw = strip_pipe_metadata(raw)
     text = normalise_title(raw)
     text = strip_artist_from_title(text, artist_from_channel(channel))
     text = RE_BRACKETS.sub(" ", text)
-    text = RE_FEAT.sub(" ", text)
+
+    # RE_FEAT strips to end-of-string, which is right for "Song ft. Guest" and
+    # wrong for "Artist ft. Guest - Song" — standard VEVO naming, where the
+    # feature clause sits in the *artist* half and the song name follows a
+    # dash. Left unguarded this returned "" for "The Weeknd ft. Future -
+    # Double Fantasy", so every such track fell back to its video id and could
+    # never merge with its own duplicates.
+    without_feature = RE_FEAT.sub(" ", text)
+    if len(without_feature.strip()) < 2 and " - " in text:
+        without_feature = text.rsplit(" - ", 1)[-1]
+    text = without_feature
+
     text = RE_VARIANT.sub(" ", text)
     text = RE_NONWORD.sub(" ", text.lower())
     text = RE_SPACES.sub(" ", text).strip()
@@ -105,10 +174,10 @@ def canonical_key(title: str | None, channel: str | None = None) -> str:
     artist = RE_SPACES.sub(" ", artist).strip()
 
     marker = ""
-    if distinct_marker:
+    if distinct_match:
         # A remix/cover/live version keeps its own identity, tagged so it
         # cannot collide with the studio recording.
-        marker = "|" + RE_DISTINCT.search(raw).group(0).lower().strip()
+        marker = "|" + distinct_match.group(0).lower().strip()
     return (f"{artist}|{text}" if artist else f"?|{text}") + marker
 
 
