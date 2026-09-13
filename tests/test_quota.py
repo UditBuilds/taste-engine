@@ -30,7 +30,14 @@ class TestPricing:
 
     def test_unknown_method_is_refused_not_guessed(self, ledger):
         with pytest.raises(UnknownMethod):
-            ledger.cost_of("channels.list")
+            ledger.cost_of("captions.download")
+
+    def test_every_method_the_code_calls_has_a_documented_cost(self, ledger):
+        """A missing cost must fail loudly, not default to zero."""
+        for method in ("videos.list", "channels.list", "playlists.insert",
+                       "playlists.delete", "playlistItems.insert",
+                       "playlistItems.list"):
+            assert ledger.cost_of(method) > 0
 
     def test_resolving_all_30k_videos_costs_609_units(self, ledger):
         """30,438 ids / 50 per call = 609 calls = 609 units, under 7% of a day."""

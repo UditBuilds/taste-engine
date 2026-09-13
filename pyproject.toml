@@ -15,6 +15,9 @@ dependencies = [
     "sentence-transformers>=3.0",
 ]
 
+[project.scripts]
+taste-engine = "taste_engine.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 

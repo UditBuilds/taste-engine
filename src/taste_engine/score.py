@@ -98,11 +98,17 @@ def scored_tracks(
     end: str | None = None,
     half_life: float | None = None,
     music_only: bool = True,
+    canonical: bool = True,
 ) -> pd.DataFrame:
     """Scored tracks for a window, joined to titles and music labels.
 
     `as_of` defaults to `end` when a window is given, so the training window is
     always scored from its own edge rather than from today.
+
+    `canonical=True` collapses multiple uploads of the same recording into one
+    track and sums their plays. Leaving it off inflates nDCG and leaks
+    favourites past the rediscovery hold-out — see `canonical.py`. It is a
+    parameter only so the two can be measured against each other.
     """
     labels = classify(conn)
     if music_only:
@@ -119,6 +125,10 @@ def scored_tracks(
         if c in labels.columns
     ]
     df = agg.merge(labels[keep], on="video_id", how="inner")
+    if canonical:
+        from .canonical import collapse
+
+        df = collapse(df)
     df = add_scores(df, as_of=as_of if as_of is not None else end, half_life=half_life)
     return df.sort_values("score", ascending=False).reset_index(drop=True)
 

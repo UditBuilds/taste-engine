@@ -88,22 +88,67 @@ CREATE INDEX IF NOT EXISTS ix_quota_day ON quota_log(day);
 
 -- Phase 4: what we wrote back, so it can be undone -------------------------
 
+-- `id` is the handle the CLI uses (`--resume 3`); `playlist_id` is YouTube's,
+-- and is NULL until the remote playlist actually exists. Keeping them separate
+-- is what makes a crash between "create" and "first insert" recoverable.
 CREATE TABLE IF NOT EXISTS written_playlists (
-    playlist_id TEXT PRIMARY KEY,
+    id          INTEGER PRIMARY KEY,
+    playlist_id TEXT UNIQUE,
     title       TEXT,
+    description TEXT,
+    cluster     INTEGER,
+    privacy     TEXT NOT NULL DEFAULT 'private',
+    status      TEXT NOT NULL,   -- pending|partial|complete|mismatch|rolled_back
+    planned     INTEGER NOT NULL DEFAULT 0,
+    -- The ordered video ids this write intends. Persisted rather than
+    -- re-derived so a resume writes the same playlist it started, even if the
+    -- database has been re-scored in between.
+    planned_ids TEXT,
+    written     INTEGER NOT NULL DEFAULT 0,
+    units_spent INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT,
-    track_count INTEGER,
-    committed   INTEGER DEFAULT 0
+    updated_at  TEXT
 );
 
+-- The resume ledger. A track present here has been accepted by YouTube, so a
+-- re-run skips it; that is the whole idempotency story.
 CREATE TABLE IF NOT EXISTS written_tracks (
-    playlist_id TEXT NOT NULL,
-    video_id    TEXT NOT NULL,
-    position    INTEGER,
-    written_at  TEXT,
-    PRIMARY KEY (playlist_id, video_id)
+    playlist_row INTEGER NOT NULL,
+    video_id     TEXT NOT NULL,
+    position     INTEGER,
+    item_id      TEXT,
+    written_at   TEXT,
+    PRIMARY KEY (playlist_row, video_id)
 );
+CREATE INDEX IF NOT EXISTS ix_wt_row ON written_tracks(playlist_row);
 """
+
+# Phase 4 tables were reshaped after Phase 3 shipped. They are write-back
+# bookkeeping, empty until the first playlist is written, so an in-place
+# rebuild is safe — but only while they are actually empty.
+_PHASE4_TABLES = ("written_playlists", "written_tracks")
+
+
+def _migrate_phase4(conn: sqlite3.Connection) -> None:
+    for table in _PHASE4_TABLES:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not cols:
+            continue
+        expected = (
+            {"status", "planned_ids"}
+            if table == "written_playlists"
+            else {"playlist_row"}
+        )
+        if expected <= cols:
+            continue
+        rows = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        if rows:
+            raise RuntimeError(
+                f"{table} has the pre-Phase-4 shape but holds {rows} rows. "
+                "Refusing to drop written-playlist history automatically; "
+                "back it up and migrate by hand."
+            )
+        conn.execute(f"DROP TABLE {table}")
 
 
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
@@ -113,6 +158,7 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    _migrate_phase4(conn)
     conn.executescript(SCHEMA)
     return conn
 

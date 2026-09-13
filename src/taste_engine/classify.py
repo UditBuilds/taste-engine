@@ -93,7 +93,38 @@ def has_metadata(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT COUNT(*) FROM video_metadata").fetchone()[0] > 0
 
 
-def classify(conn: sqlite3.Connection) -> pd.DataFrame:
+_CACHE: dict = {}
+
+
+def _cache_key(conn: sqlite3.Connection) -> tuple:
+    """Identify the database by path and row counts.
+
+    Cheap to compute and changes whenever the parser or resolver has run, so a
+    stale frame cannot survive a re-parse.
+    """
+    path = conn.execute("PRAGMA database_list").fetchone()[2]
+    plays = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+    meta = conn.execute("SELECT COUNT(*) FROM video_metadata").fetchone()[0]
+    return (path, plays, meta)
+
+
+def classify(conn: sqlite3.Connection, use_cache: bool = True) -> pd.DataFrame:
+    """Memoised wrapper - labelling 30k videos is pure and not cheap.
+
+    A hold-out sweep calls this once per split per half-life; without the cache
+    the sweep is dominated by recomputing an answer that cannot have changed.
+    Returns a copy so callers cannot corrupt the cached frame.
+    """
+    if not use_cache:
+        return _classify_uncached(conn)
+    key = _cache_key(conn)
+    if key not in _CACHE:
+        _CACHE.clear()  # only ever one database in play
+        _CACHE[key] = _classify_uncached(conn)
+    return _CACHE[key].copy()
+
+
+def _classify_uncached(conn: sqlite3.Connection) -> pd.DataFrame:
     """Heuristic labels, plus API labels wherever metadata has been fetched.
 
     `is_music` is the union of the two (see the reasoning below), so the

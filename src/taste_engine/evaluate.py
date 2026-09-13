@@ -58,6 +58,7 @@ def split_frames(
     half_life: float | None = None,
     cluster: bool = True,
     test_days: int | None = None,
+    canonical: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Training frame scored as of the split, plus test-window play counts.
 
@@ -65,10 +66,12 @@ def split_frames(
     from today would leak the length of the test window into the recency term.
     """
     train = scored_tracks(
-        conn, start=None, end=split_date, as_of=split_date, half_life=half_life
+        conn, start=None, end=split_date, as_of=split_date, half_life=half_life,
+        canonical=canonical,
     )
     test = scored_tracks(
-        conn, start=split_date, end=_window_end(split_date, test_days), as_of=None
+        conn, start=split_date, end=_window_end(split_date, test_days), as_of=None,
+        canonical=canonical,
     )
     if cluster and not train.empty:
         train = cluster_tracks(train)
@@ -99,12 +102,15 @@ def evaluate(
     half_life: float | None = None,
     strategies: list[str] | None = None,
     test_days: int | None = None,
+    canonical: bool = True,
 ) -> dict:
     split_date = split_date or config.EVAL_SPLIT_DATE
     k = k or config.EVAL_K
     names = strategies or list(STRATEGIES)
 
-    train, test = split_frames(conn, split_date, half_life, test_days=test_days)
+    train, test = split_frames(
+        conn, split_date, half_life, test_days=test_days, canonical=canonical
+    )
     if train.empty or test.empty:
         raise ValueError(f"empty train or test window at split {split_date}")
 
@@ -168,6 +174,7 @@ def rediscovery_split(
     exclude_top: int = 50,
     test_days: int | None = None,
     cluster: bool = True,
+    canonical: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, set[str]]:
     """Hold out the obvious favourites, then ask what else gets played.
 
@@ -179,7 +186,8 @@ def rediscovery_split(
     that he was not already hammering?
     """
     train, test = split_frames(
-        conn, split_date, half_life, cluster=cluster, test_days=test_days
+        conn, split_date, half_life, cluster=cluster, test_days=test_days,
+        canonical=canonical,
     )
     # `video_id` breaks ties deterministically. Without it the excluded set
     # inherits the frame's incoming order, which `scored_tracks` sorts by
@@ -205,6 +213,7 @@ def evaluate_rediscovery(
     strategies: list[str] | None = None,
     exclude_top: int = 50,
     test_days: int | None = None,
+    canonical: bool = True,
 ) -> dict:
     """recall@k and nDCG@k on the non-obvious tracks.
 
@@ -220,7 +229,7 @@ def evaluate_rediscovery(
     # strategy is not requested makes a half-life sweep tractable.
     candidates, truth, obvious = rediscovery_split(
         conn, split_date, half_life, exclude_top, test_days,
-        cluster="cluster_diverse" in names,
+        cluster="cluster_diverse" in names, canonical=canonical,
     )
     if candidates.empty or truth.empty:
         raise ValueError(f"empty candidate or truth set at split {split_date}")
@@ -354,6 +363,139 @@ def rediscovery_half_life_sweep(
             }
         )
     return pd.DataFrame(rows)
+
+
+MONTHLY_SPLITS = [
+    "2025-12-01", "2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01",
+    "2026-05-01", "2026-06-01", "2026-07-01", "2026-08-01",
+]
+
+
+def nested_rediscovery(
+    conn: sqlite3.Connection,
+    splits: list[str] | None = None,
+    half_lives: list[float] | None = None,
+    k: int = 20,
+    exclude_top: int = 50,
+    test_days: int | None = None,
+    min_reachable: int = 20,
+    canonical: bool = True,
+) -> dict:
+    """Select the half-life on early splits, report on later ones it never saw.
+
+    Tuning a hyperparameter on the same splits you then report is selection
+    bias: it turns the reported lift into an upper bound rather than an
+    estimate. This splits the timeline in two - the earlier months choose the
+    half-life, the later months score it, and the later months are never
+    consulted during selection.
+
+    With a handful of held-out splits this cannot establish significance. It
+    can establish whether the effect survives honest tuning at all, which is
+    the question.
+    """
+    splits = splits or MONTHLY_SPLITS
+    half_lives = half_lives or [7, 14, 30, 60, 90, 180, 365]
+    test_days = test_days if test_days is not None else config.EVAL_TEST_DAYS
+
+    # Keep only splits with enough reachable truth to discriminate. Done once,
+    # at a fixed half-life, so the usable set cannot depend on the tuning.
+    usable = []
+    for split in splits:
+        try:
+            probe = evaluate_rediscovery(
+                conn, split, k, half_life=30, strategies=["most_played"],
+                exclude_top=exclude_top, test_days=test_days, canonical=canonical,
+            )
+        except ValueError:
+            continue
+        if probe["reachable"] >= min_reachable:
+            usable.append({"split": split, "reachable": probe["reachable"]})
+
+    if len(usable) < 4:
+        return {"status": "too few usable splits", "usable": usable}
+
+    cut = len(usable) // 2
+    dev = [u["split"] for u in usable[:cut]]
+    held = [u["split"] for u in usable[cut:]]
+
+    def _score(split_list, half_life):
+        rows = []
+        for split in split_list:
+            report = evaluate_rediscovery(
+                conn, split, k, half_life, strategies=["most_played", "score"],
+                exclude_top=exclude_top, test_days=test_days, canonical=canonical,
+            )
+            r = report["results"].set_index("strategy")
+            rows.append(
+                {
+                    "split": split,
+                    "baseline": r.loc["most_played", f"ndcg@{k}"],
+                    "score": r.loc["score", f"ndcg@{k}"],
+                }
+            )
+        return pd.DataFrame(rows)
+
+    # --- selection, on dev only ---
+    dev_rows = []
+    for half_life in half_lives:
+        frame = _score(dev, half_life)
+        dev_rows.append(
+            {
+                "half_life": half_life,
+                "mean_baseline": frame["baseline"].mean(),
+                "mean_score": frame["score"].mean(),
+                "wins": int((frame["score"] > frame["baseline"]).sum()),
+                "splits": len(frame),
+            }
+        )
+    dev_table = pd.DataFrame(dev_rows)
+    dev_table["lift"] = (
+        dev_table["mean_score"] - dev_table["mean_baseline"]
+    ) / dev_table["mean_baseline"]
+    chosen = float(
+        dev_table.sort_values(["wins", "mean_score"], ascending=False).iloc[0]["half_life"]
+    )
+
+    # --- reporting, on held-out splits the selection never touched ---
+    held_frame = _score(held, chosen)
+    held_frame["lift"] = (
+        held_frame["score"] - held_frame["baseline"]
+    ) / held_frame["baseline"]
+    held_frame["win"] = held_frame["score"] > held_frame["baseline"]
+
+    mean_base = held_frame["baseline"].mean()
+    mean_score = held_frame["score"].mean()
+    wins = int(held_frame["win"].sum())
+    n = len(held_frame)
+
+    # Sign test against a coin flip. With n this small only a clean sweep is
+    # even nominally significant, which is itself worth stating.
+    p_value = sum(
+        _n_choose_k(n, i) for i in range(wins, n + 1)
+    ) / (2 ** n) if n else 1.0
+
+    return {
+        "status": "ok",
+        "usable_splits": usable,
+        "dev_splits": dev,
+        "held_out_splits": held,
+        "dev_table": dev_table,
+        "chosen_half_life": chosen,
+        "held_out": held_frame,
+        "mean_baseline": mean_base,
+        "mean_score": mean_score,
+        "lift": (mean_score - mean_base) / mean_base if mean_base else 0.0,
+        "wins": wins,
+        "n": n,
+        "sign_test_p": p_value,
+        "significant": bool(p_value < 0.05),
+    }
+
+
+def _n_choose_k(n: int, k: int) -> int:
+    from math import comb
+
+    return comb(n, k)
 
 
 def sweep(

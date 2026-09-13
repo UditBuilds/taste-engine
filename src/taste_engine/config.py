@@ -28,6 +28,13 @@ LIBRARY_SONGS_CSV = TAKEOUT_DIR / "music (library and uploads)" / "music library
 # is ambiguous globally. This export is from an Asia/Kolkata account.
 LOCAL_TZ = timezone(timedelta(hours=5, minutes=30), name="IST")
 
+# --- OAuth (Phase 4 write-back) --------------------------------------------
+# Desktop-app client downloaded from Google Cloud; never committed.
+CREDENTIALS_PATH = Path(os.environ.get("YT_CREDENTIALS", REPO_ROOT / "credentials.json"))
+TOKEN_PATH = Path(os.environ.get("YT_TOKEN", REPO_ROOT / "token.json"))
+# Read+write. `youtube.readonly` cannot create playlists, so it is not enough.
+OAUTH_SCOPES = ["https://www.googleapis.com/auth/youtube"]
+
 # --- API quota -------------------------------------------------------------
 # Google's per-project ceiling is 10,000 units/day and cannot be purchased.
 QUOTA_HARD_LIMIT = 10_000
@@ -36,7 +43,9 @@ QUOTA_DAILY_CAP = int(os.environ.get("YT_DAILY_QUOTA_CAP", 8_000))
 # Documented unit costs (https://developers.google.com/youtube/v3/determine_quota_cost)
 QUOTA_COSTS = {
     "videos.list": 1,
+    "channels.list": 1,
     "playlists.insert": 50,
+    "playlists.delete": 50,
     "playlistItems.insert": 50,
     "playlistItems.list": 1,
     "search.list": 100,
