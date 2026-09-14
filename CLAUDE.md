@@ -60,6 +60,17 @@ Write tool, or write a patch script to a file and execute that.** Verify with
 `... | head -30` SIGPIPEs the producer. A 20-minute evaluation died after
 printing its first table and reported exit 0.
 
+### Trap 4 — `git push` has no credentials in this environment
+
+`git push origin main` fails: `fatal: could not read Username for
+'https://github.com': No such device or address`. No credential helper, no
+`gh` CLI, HTTPS remote — not fixable from here. Ask Udit to run it himself
+(suggest `! git push origin main` so it runs in his session and the output
+lands in the conversation). Happened twice in one day (2026-09-13) across two
+different briefs — don't retry blindly, just ask. Commits themselves work
+fine once `user.name`/`user.email` are set (also not something to set
+yourself — ask Udit the same way if `git commit` reports no identity).
+
 ## Commands
 
 ```bash
@@ -76,6 +87,8 @@ scripts/run.sh scripts/verify_strict_null.py # is the strict-filter null real?
 scripts/run.sh scripts/contamination.py      # non-music audit
 scripts/run.sh scripts/verify_write_plan.py  # pre-write gates
 scripts/run.sh scripts/audit_notebook.py     # pre-push leak gate (exit 1 = leak)
+scripts/run.sh scripts/backfill_report.py "T-Series" "Travis Scott"  # B4-style
+                                              # native/backfill report, no API calls
 ```
 
 Evaluations take **10–30 minutes**. Run them with `run_in_background: true` and
@@ -96,6 +109,7 @@ wrong number that looks fine.
 | `STRICT_MUSIC = True` | 5.6% contamination; the permissive signal is categoryId (121 of 127), not playlists (5). |
 | half-life selected by **nested** tuning | Selecting and reporting on the same splits turned +1.9% into an upper bound presented as a finding. |
 | playlist titles **pseudonymised** | Public repo, personal titles, and every metric treats them as opaque labels. `redact.py`; mapping is gitignored. |
+| **SUPERSEDED 2026-09-14** — shallow-cluster backfill by nearest **embedding centroid**, `MIN_SCORE = 0.5` floor | Fan-re-upload degradation was worse than a shorter, floor-respecting playlist. Not tuned to flatter: T-Series's backfill is musically incoherent (Joji, Playboi Carti, Doja Cat) and that's reported in README, not hidden. Replaced by depth-based length (`MIN_CLUSTER_NATIVE`/`MAX_BACKFILL_SHARE`) plus a genre guard on each backfill candidate — briefs/backfill_constraint.md. |
 
 ### Cluster ids are not identifiers
 
@@ -136,7 +150,7 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
 
 ## State
 
-- 301 tests pass. Phases 1–4 built.
+- 307 tests pass. Phases 1–4 built.
 - Takeout parsed; all 30,440 videos resolved (609 units spent, quota ledger has
   the record).
 - **Live write-back has now run.** The first `--commit` against the real
@@ -153,6 +167,29 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
   retry fired for real mid-write and recovered transparently. `token.json`
   is already a valid cached credential, so nothing here needed a browser;
   `run_local_server` still needs one for a *first* consent on a fresh machine.
+- **Backfill shipped (2026-09-13), not yet exercised live.** `--cluster-name`
+  requests can run out of material scoring >= `config.MIN_SCORE` (0.5) long
+  before the playlist fills — T-Series has 22 of 492 eligible, Travis Scott 21
+  of 84. `writer.plan()` now backfills from the nearest clusters by embedding
+  centroid instead of padding below the floor; if the whole pool runs dry
+  first, the playlist comes back short instead of full. Measured
+  (`scripts/backfill_report.py`, dry run, no API calls) and written up in
+  README's "Backfill" section: Travis Scott's backfill is musically coherent
+  (Kendrick, Drake, Post Malone), T-Series's is not (Joji, Playboi Carti, Doja
+  Cat — see Known open items #3). Confirmed the rediscovery eval can't move
+  and doesn't: stashed the backfill code, re-ran `--both --test-days 30`,
+  restored, ran again — byte-identical output both times, not just an
+  architectural argument. **The live T-Series playlist on the account predates
+  this** — written under the old top-N-by-score logic before `MIN_SCORE`
+  existed, so it does not reflect what the current code would produce if
+  re-run today. No `--commit` ran this session.
+- **Dataset-scale figures: verify before quoting, don't trust a remembered
+  number.** A same-day brief stated 40,617 plays / 30,438 videos / 3,143
+  canonical songs; querying the DB directly gave 40,619 / 30,440 / 2,918. The
+  first two are off by 2 from measurement (matches this file's older figures;
+  source of the brief's numbers unclear). The third is off by 225 and
+  unreconciled through STRICT_MUSIC-off or any other filter variant tried.
+  README's opener uses the measured figures (2,918 canonical songs).
 - `data/` is entirely gitignored: Takeout, `taste.db`, embeddings, alias map,
   contamination sample.
 
@@ -167,11 +204,19 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
 3. **Clusters are artist-shaped, not mood-shaped.** Genre embeddings were
    tested and rejected (ARI 0.397 vs 0.627); `topicCategories` is too coarse at
    35 tags. Audio features would be the real fix and YouTube does not expose
-   them.
+   them. New evidence (2026-09-13): this is also why nearest-cluster backfill
+   (item 5) is musically coherent for an artist-genre-shaped cluster (Travis
+   Scott → Kendrick, Drake, Post Malone) and incoherent for an
+   industry/language-shaped one (T-Series → Joji, Playboi Carti, Doja Cat).
+   "Nearest cluster" is only as meaningful as the clustering it's measured in.
 4. **§1.4's split table** predates the strict filter; caveated in place rather
    than re-run.
-5. **Rediscover mode needs pool depth** — a ~90-song cluster asked for 50
-   degrades into fan re-uploads by the 27th.
+5. **Rediscover mode pool depth — addressed, not solved.** A shallow cluster
+   used to degrade into fan re-uploads once native material ran out; backfill
+   (2026-09-13, README §8 "Backfill") fixes the *floor* — nothing below
+   `MIN_SCORE` ships — but not the *coherence* (item 3). A cluster whose
+   nearest neighbours are genuinely unrelated gets an oddly-mixed playlist
+   instead of a low-quality one, not a fixed one.
 
 ## Repo shape
 
@@ -191,7 +236,8 @@ src/taste_engine/
   evaluate.py     replay + rediscovery + nested tuning
   redact.py       pseudonymise playlist titles before publication
   auth.py         OAuth (write only; reads use an API key)
-  writer.py       quota-aware, resumable, self-verifying write
+  writer.py       quota-aware, resumable, self-verifying write; backfills a
+                  shallow cluster from its nearest neighbours, never below floor
   cli.py          `taste-engine`
 ```
 

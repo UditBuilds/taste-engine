@@ -93,17 +93,29 @@ STRICT_MUSIC = True
 STRICT_MAX_SECONDS = 15 * 60
 STRICT_MIN_SECONDS = 45
 
-# --- backfill floor (Build Brief 3) -----------------------------------------
-# A --cluster-name request can run out of eligible material long before the
-# playlist fills: measured on this library, T-Series (492 tracks) has only 22
-# scoring >= 0.5 after the rediscovery favourites exclusion, and Travis Scott
-# (84 tracks) has 21 - see scripts/backfill_report.py. Padding with material
-# the model itself scores below this floor would be the writer contradicting
-# the ranker, so a shallow cluster backfills from its nearest neighbours by
-# embedding centroid instead of padding - and if the whole pool above the
-# floor still can't fill the request, the playlist comes back short rather
-# than padded.
+# --- backfill floor, length and genre guard (Build Brief 4) -----------------
+# A --cluster-name request can run out of eligible material long before a
+# fixed-size playlist fills: measured on this library, T-Series (492 tracks)
+# has only 22 scoring >= 0.5 after the rediscovery favourites exclusion, and
+# Travis Scott (84 tracks) has 21 - see scripts/backfill_report.py. Padding
+# with material the model itself scores below this floor would be the writer
+# contradicting the ranker. The earlier fix backfilled from the nearest
+# cluster by embedding centroid, which pulled musically unrelated tracks
+# (T-Series padded with Travis Scott) - see briefs/backfill_constraint.md.
+# Replaced by three rules, implemented entirely in writer.py:
+#   FLOOR  - a cluster with fewer than MIN_CLUSTER_NATIVE eligible members
+#            generates no playlist at all, rather than a thin one.
+#   LENGTH - target length = floor(native / (1 - MAX_BACKFILL_SHARE)), so the
+#            backfill share is capped by construction, never by truncating a
+#            fixed request after the fact.
+#   GUARD  - a backfill candidate must share a tidied genre label
+#            (embed.tidy_genres) with the cluster's modal genre; if not
+#            enough such candidates exist the playlist comes back short - the
+#            guard is never relaxed to hit length.
+# Reachability under this rule is measured in reports/backfill_plan.md.
 MIN_SCORE = 0.5
+MIN_CLUSTER_NATIVE = 12
+MAX_BACKFILL_SHARE = 0.25
 
 # --- write-back retry policy -------------------------------------------------
 # First live write (2026-09-13): playlistItems.insert returned 409

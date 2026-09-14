@@ -7,7 +7,6 @@ Run:  scripts/run.sh scripts/backfill_report.py "T-Series" "Travis Scott"
 """
 from __future__ import annotations
 
-import collections
 import sys
 
 from taste_engine.canonical import canonical_key
@@ -15,22 +14,30 @@ from taste_engine.db import connect
 from taste_engine import config, writer
 
 
-def report(conn, cluster_name: str, limit: int = 45) -> None:
+def report(conn, cluster_name: str) -> None:
     print("=" * 78)
-    print(f"{cluster_name!r} at limit {limit}")
+    print(f"{cluster_name!r}")
     print("=" * 78)
 
-    p = writer.plan(conn, cluster_name=cluster_name, limit=limit, mode="rediscover")
+    try:
+        p = writer.plan(conn, cluster_name=cluster_name, mode="rediscover")
+    except writer.WriteBlocked as exc:
+        print(f"  BLOCKED: {exc}")
+        print()
+        return
     tracks = p["tracks"]
 
     print(f"  requested cluster        {p['cluster']} ({p['title']})")
     print(f"  native (>= {config.MIN_SCORE} in-cluster) {p['native_count']}")
+    print(f"  modal genre                {p['modal_genre']!r}")
+    print(f"  target length              {p['target_length']} "
+          f"= floor({p['native_count']} / (1 - {config.MAX_BACKFILL_SHARE}))")
     print(f"  backfilled                {p['backfilled_count']} "
           f"from {len(p['backfill_by_cluster'])} neighbouring cluster(s)")
     for cid, cname, n in p["backfill_by_cluster"]:
         print(f"      {n:>3} from cluster {cid} ({cname})")
-    print(f"  final count                {p['count']} of {limit} requested"
-          + (f"  -- SHORT by {p['shortfall']}, no more material clears the floor"
+    print(f"  final count                {p['count']} of {p['target_length']} target"
+          + (f"  -- SHORT by {p['shortfall']}, not enough genre-matching material"
              if p["shortfall"] else ""))
     if len(tracks):
         print(f"  score range                {tracks['score'].min():.3f} - "
@@ -55,7 +62,7 @@ def main() -> int:
     conn = connect()
     try:
         for name in names:
-            report(conn, name, limit=45)
+            report(conn, name)
     finally:
         conn.close()
     return 0

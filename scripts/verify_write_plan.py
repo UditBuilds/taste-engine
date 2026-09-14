@@ -1,6 +1,9 @@
-"""Pre-write gates: is this list 50 distinct songs, ranked on canonical data?
+"""Pre-write gates: is this list distinct songs, ranked on canonical data?
 
-Run:  scripts/run.sh scripts/verify_write_plan.py <cluster> <limit>
+Cluster length is computed (floor + genre guard, briefs/backfill_constraint.md),
+not requested - there is no `limit` to pass.
+
+Run:  scripts/run.sh scripts/verify_write_plan.py <cluster>
 """
 import sys, warnings, collections, re
 warnings.filterwarnings("ignore")
@@ -12,10 +15,9 @@ from taste_engine.canonical import canonical_key
 from taste_engine.score import scored_tracks
 
 cluster = int(sys.argv[1]) if len(sys.argv) > 1 else 34
-limit = int(sys.argv[2]) if len(sys.argv) > 2 else 50
 
 conn = connect()
-p = plan(conn, cluster=cluster, limit=limit)
+p = plan(conn, cluster=cluster)
 t = p["tracks"]
 
 print("=" * 70)
@@ -39,7 +41,7 @@ print("     came through the canonical path before ranking)")
 if has_variants:
     merged = t[t["variants"] > 1]
     print(f"  selected songs built from >1 upload  {len(merged)} of {len(t)}")
-    print(f"  total uploads behind these 50 songs  {int(t['variants'].sum())}")
+    print(f"  total uploads behind these {len(t)} songs  {int(t['variants'].sum())}")
     print("\n  merged songs in this playlist (play counts are SUMS):")
     for _, r in merged.sort_values("play_count", ascending=False).head(6).iterrows():
         print(f"    {int(r['variants'])} uploads, {int(r['play_count']):>3} plays  "

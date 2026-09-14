@@ -21,15 +21,17 @@ all of them load-bearing rather than decorative:
 from __future__ import annotations
 
 import json
+import math
 import random
 import sqlite3
 import time
+from collections import Counter
 from datetime import datetime, timezone
 
-import numpy as np
 import pandas as pd
 
 from . import config
+from .embed import tidy_genres
 from .quota import QuotaExceeded, QuotaLedger
 
 CREATE_METHOD = "playlists.insert"
@@ -59,64 +61,56 @@ MODE_TOP = "top"
 MODES = (MODE_REDISCOVER, MODE_TOP)
 
 
-def _cluster_centroids(real_frame: pd.DataFrame) -> dict[int, np.ndarray]:
-    """Mean PCA-reduced embedding per real (non-noise) cluster.
+def _target_length(native: int) -> int:
+    """floor(native / (1 - MAX_BACKFILL_SHARE)) - the whole length rule.
 
-    Re-derives from the cached MiniLM embeddings already computed for this
-    corpus - `embed_texts` keys its cache by the exact text list, so this is
-    a cache hit (measured: ~0.05s for the full library), not a re-embed. That
-    keeps the backfill's notion of "nearest cluster" local to this function
-    rather than threading reduced vectors through `recommend.build()`'s
-    contract and every caller of it, `evaluate.py` included.
+    Backfill share is capped by construction: share = 1 - native/target, and
+    target <= native/(1 - MAX_BACKFILL_SHARE) because floor() only ever
+    rounds down, so share <= MAX_BACKFILL_SHARE always (equality exactly at
+    native = MIN_CLUSTER_NATIVE with the shipped constants: 12 -> 16).
     """
-    from . import embed
-
-    texts = list(real_frame["embed_text"])
-    vectors = embed.embed_texts(texts, use_cache=True)
-    reduced = embed.reduce_dims(vectors)
-    positions = np.asarray(real_frame["cluster"])
-    centroids: dict[int, np.ndarray] = {}
-    for cid in np.unique(positions):
-        centroids[int(cid)] = reduced[positions == cid].mean(axis=0)
-    return centroids
+    return math.floor(native / (1 - config.MAX_BACKFILL_SHARE))
 
 
-def _clusters_by_distance(real_frame: pd.DataFrame, from_cluster: int) -> list[int]:
-    """Every other real cluster's id, nearest to `from_cluster` first.
+def _modal_genre(genre_lists) -> tuple[str | None, int]:
+    """(modal_genre, n_labeled) by plurality vote over tidied genre labels.
 
-    Cosine distance between mean embeddings in the PCA-reduced space HDBSCAN
-    actually clustered in - raw 384-d is where clustering itself degenerates
-    (embed.py's own PCA_COMPONENTS note), so it is not a space worth measuring
-    "nearest" in either.
+    Same definition reports/genre_coverage.md used: each labeled member votes
+    once per distinct label it carries (`set(gl)`, so a track with the same
+    label twice cannot inflate it), the label with the most votes wins, and a
+    tie goes to whichever label was first encountered (`Counter.most_common`
+    order) - unobserved on this corpus (genre_coverage.md found 0 of 37
+    clusters ambiguous) but deterministic given a fixed input order either
+    way. `None, 0` when no member carries any label at all.
     """
-    centroids = _cluster_centroids(real_frame)
-    origin = centroids.get(from_cluster)
-    if origin is None:
-        return []
-    origin_norm = origin / max(float(np.linalg.norm(origin)), 1e-12)
-
-    ranked = []
-    for cid, vec in centroids.items():
-        if cid == from_cluster:
-            continue
-        vec_norm = vec / max(float(np.linalg.norm(vec)), 1e-12)
-        cos_distance = 1.0 - float(np.dot(origin_norm, vec_norm))
-        ranked.append((cos_distance, cid))
-    ranked.sort()  # distance first, cluster id breaks ties deterministically
-    return [cid for _, cid in ranked]
+    labeled = [gl for gl in genre_lists if gl]
+    if not labeled:
+        return None, 0
+    counts: Counter[str] = Counter()
+    for gl in labeled:
+        counts.update(set(gl))
+    modal_genre, _ = counts.most_common(1)[0]
+    return modal_genre, len(labeled)
 
 
 def _select_with_backfill(
-    frame: pd.DataFrame, cluster: int, limit: int
-) -> tuple[pd.DataFrame, int, list[tuple[int, str, int]]]:
-    """Fill `limit` slots from `cluster`; backfill from nearest clusters (by
-    embedding centroid) when it runs out of tracks scoring >= MIN_SCORE.
+    frame: pd.DataFrame, cluster: int
+) -> tuple[pd.DataFrame, int, list[tuple[int, str, int]], str | None, int]:
+    """Fill a cluster's native tracks up to a genre-guarded target length.
 
-    Never pads below the floor: if every real cluster's eligible tracks are
-    exhausted before reaching `limit`, the result is simply shorter. Returns
-    `(tracks, native_count, backfill_summary)`, where `backfill_summary` is
-    one `(cluster_id, cluster_name, n_taken)` per cluster actually drawn
-    from, in the order drawn - empty when the cluster had enough on its own.
+    FLOOR is enforced by the caller (`plan()`) before this runs. LENGTH:
+    target = `_target_length(native)`. GUARD: a backfill candidate must carry
+    the cluster's modal genre among its own tidied genre labels; the nearest-
+    embedding-centroid path this replaced is gone, not flagged off - see
+    briefs/backfill_constraint.md. No modal genre (native block entirely
+    unlabeled) or too few genre-matching candidates both resolve the same
+    way: fewer tracks, never a non-matching one.
+
+    Returns `(tracks, native_count, backfill_summary, modal_genre,
+    target_length)`, where `backfill_summary` is one `(cluster_id,
+    cluster_name, n_taken)` per outside cluster actually drawn from, grouped
+    in the order its tracks first appear in the score-ranked backfill block -
+    empty when the cluster had enough on its own.
     """
     real = frame[frame["cluster"] >= 0]
     eligible = real[real["score"] >= config.MIN_SCORE]
@@ -125,28 +119,34 @@ def _select_with_backfill(
         return pool.sort_values(["score", "video_id"], ascending=[False, True])
 
     native = _ranked(eligible[eligible["cluster"] == cluster])
-    if len(native) >= limit:
-        picked = native.head(limit).reset_index(drop=True)
-        return picked, len(picked), []
-
-    parts = [native]
     native_count = len(native)
-    remaining = limit - native_count
+    target_length = _target_length(native_count)
+    deficit = target_length - native_count
+    if deficit <= 0:
+        return native.reset_index(drop=True), native_count, [], None, target_length
+
+    modal_genre, _ = _modal_genre(native["genres"].map(tidy_genres))
+
     summary: list[tuple[int, str, int]] = []
+    if modal_genre is None:
+        backfill = native.iloc[0:0]
+    else:
+        outside = eligible[eligible["cluster"] != cluster].copy()
+        outside["genres_tidy"] = outside["genres"].map(tidy_genres)
+        # .astype(bool): a *zero-length* pool (single-cluster frame, nothing
+        # outside to backfill from) makes .map() return dtype=object rather
+        # than bool - pandas then treats an empty object-dtype mask as an
+        # (empty) list of column labels, not an all-false row mask, and
+        # silently returns a same-row, zero-COLUMN frame. Cast explicitly so
+        # this stays a row mask no matter how many rows it started from.
+        mask = outside["genres_tidy"].map(lambda gl: modal_genre in gl).astype(bool)
+        matching = _ranked(outside[mask])
+        backfill = matching.head(deficit)
+        for other, take in backfill.groupby("cluster", sort=False):
+            summary.append((int(other), str(take["cluster_name"].iloc[0]), len(take)))
 
-    for other in _clusters_by_distance(real, cluster):
-        if remaining <= 0:
-            break
-        pool = _ranked(eligible[eligible["cluster"] == other])
-        if pool.empty:
-            continue
-        take = pool.head(remaining)
-        parts.append(take)
-        summary.append((other, str(take["cluster_name"].iloc[0]), len(take)))
-        remaining -= len(take)
-
-    picked = pd.concat(parts).reset_index(drop=True)
-    return picked, native_count, summary
+    picked = pd.concat([native, backfill]).reset_index(drop=True)
+    return picked, native_count, summary, modal_genre, target_length
 
 
 def plan(
@@ -179,6 +179,8 @@ def plan(
     excluded_count = 0
     requested_cluster_name = None
     native_count = None
+    modal_genre = None
+    target_length = None
     backfill_summary: list[tuple[int, str, int]] = []
     if tracks is None:
         from .recommend import build, favourites
@@ -217,8 +219,18 @@ def plan(
             # zero eligible tracks of its own would otherwise title the
             # playlist after whichever neighbour it borrowed from first.
             requested_cluster_name = str(cluster_frame["cluster_name"].iloc[0])
-            tracks, native_count, backfill_summary = _select_with_backfill(
-                frame, cluster, limit
+            native_eligible = len(
+                cluster_frame[cluster_frame["score"] >= config.MIN_SCORE]
+            )
+            if native_eligible < config.MIN_CLUSTER_NATIVE:
+                raise WriteBlocked(
+                    f"cluster {cluster} ({requested_cluster_name!r}) has "
+                    f"{native_eligible} eligible tracks, below the floor of "
+                    f"{config.MIN_CLUSTER_NATIVE} (config.MIN_CLUSTER_NATIVE) "
+                    "- no playlist generated"
+                )
+            tracks, native_count, backfill_summary, modal_genre, target_length = (
+                _select_with_backfill(frame, cluster)
             )
         else:
             frame = frame.sort_values(["score", "video_id"], ascending=[False, True])
@@ -257,7 +269,9 @@ def plan(
         "native_count": native_count,
         "backfilled_count": backfilled_count,
         "backfill_by_cluster": backfill_summary,
-        "shortfall": max(0, limit - n) if cluster is not None else 0,
+        "modal_genre": modal_genre,
+        "target_length": target_length,
+        "shortfall": max(0, target_length - n) if target_length is not None else 0,
         "breakdown": {
             CREATE_METHOD: costs[CREATE_METHOD],
             INSERT_METHOD: costs[INSERT_METHOD] * n,
@@ -275,11 +289,23 @@ def render_plan(p: dict, ledger: QuotaLedger | None = None) -> str:
         f"  mode       {p.get('mode', MODE_REDISCOVER)}"
         + (f"   ({p['excluded_favourites']} most-played songs excluded, "
            "matching the eval)" if p.get("excluded_favourites") else ""),
-        f"  tracks     {p['count']}"
-        + (f"   ({p['shortfall']} short of the {p['count'] + p['shortfall']} "
-           "requested - no more material clears the floor)"
-           if p.get("shortfall") else ""),
     ]
+    if p.get("target_length") is not None:
+        lines.append(
+            f"  length     {p['target_length']} = floor({p['native_count']} native / "
+            f"(1 - {config.MAX_BACKFILL_SHARE}))   "
+            "(--limit ignored: length is computed, not requested)"
+        )
+        lines.append(
+            f"  modal genre {p['modal_genre']!r}" if p["modal_genre"]
+            else "  modal genre none - native block carries no genre label"
+        )
+    lines.append(
+        f"  tracks     {p['count']}"
+        + (f"   ({p['shortfall']} short of the {p['target_length']} target - "
+           "not enough genre-matching backfill material, guard not relaxed)"
+           if p.get("shortfall") else "")
+    )
     if p.get("native_count") is not None:
         n_neighbours = len(p["backfill_by_cluster"])
         lines.append(
@@ -314,7 +340,9 @@ def render_plan(p: dict, ledger: QuotaLedger | None = None) -> str:
         score = row.get("score")
         tag = ""
         if requested_cluster is not None and row.get("cluster") != requested_cluster:
-            tag = f"  [backfill: {row.get('cluster_name', row.get('cluster'))}]"
+            genre = p.get("modal_genre")
+            via = row.get("cluster_name", row.get("cluster"))
+            tag = f"  [backfill: {genre} via {via}]" if genre else f"  [backfill: {via}]"
         lines.append(
             f"  {i + 1:>3}. {title:<58} {score:.3f}{tag}" if score is not None
             else f"  {i + 1:>3}. {title}{tag}"

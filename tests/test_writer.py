@@ -5,7 +5,6 @@ behaviours that matter are the ones that stop a mistake being expensive:
 dry-run by default, resume after interruption, never a silent partial, and a
 write that verifies itself.
 """
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -18,6 +17,7 @@ from fake_youtube import (
 )
 from taste_engine import writer
 from taste_engine.db import connect
+from taste_engine.embed import tidy_genres
 from taste_engine.quota import QuotaLedger
 
 
@@ -29,6 +29,7 @@ def make_tracks(n=5, start=0):
             "score": [1.0 - i * 0.01 for i in range(start, start + n)],
             "cluster": [3] * n,
             "cluster_name": ["Test Artist"] * n,
+            "genres": [["pop"]] * n,
         }
     )
 
@@ -313,11 +314,13 @@ class TestBookkeeping:
 
     def test_a_present_cluster_is_selected(self, env, monkeypatch):
         conn, _, _ = env
+        # 15 clears MIN_CLUSTER_NATIVE (12); `limit` no longer bounds a
+        # cluster request's length, so the assertion is against that count.
         monkeypatch.setattr(
-            "taste_engine.recommend.build", lambda *a, **k: make_tracks(9)
+            "taste_engine.recommend.build", lambda *a, **k: make_tracks(15)
         )
-        p = writer.plan(conn, cluster=3, limit=4, mode="top")
-        assert p["count"] == 4
+        p = writer.plan(conn, cluster=3, mode="top")
+        assert p["count"] == 15
         assert p["title"] == "taste-engine: Test Artist"
 
 
@@ -333,40 +336,47 @@ class TestModes:
 
     @pytest.fixture
     def catalogue(self):
+        """20 tracks, single cluster, single genre: big enough to clear
+        MIN_CLUSTER_NATIVE (12) even after `exclude_top=4` removes its top 4,
+        and single-cluster so there is never an outside pool to backfill
+        from - these tests are about mode/exclusion, not backfill mechanics.
+        `score` and `play_count` are co-monotonic so ranking by one orders
+        the other the same way, matching the exclusion tests' assertions.
+        """
         return pd.DataFrame({
-            "video_id": [f"v{i:02d}aaaaaaa"[:11] for i in range(12)],
-            "title": [f"Song {i}" for i in range(12)],
-            "channel": ["A - Topic"] * 12,
-            "play_count": [100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 5, 1],
-            "score": [9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.9, 0.8, 0.7],
-            "cluster": [1] * 12,
-            "cluster_name": ["A"] * 12,
-            "days_since": [1] * 12,
+            "video_id": [f"v{i:02d}aaaaaaa"[:11] for i in range(20)],
+            "title": [f"Song {i}" for i in range(20)],
+            "channel": ["A - Topic"] * 20,
+            "play_count": [200 - 10 * i for i in range(20)],
+            "score": [20.0 - i for i in range(20)],
+            "cluster": [1] * 20,
+            "cluster_name": ["A"] * 20,
+            "genres": [["pop"]] * 20,
         })
 
     def test_rediscover_is_the_default(self, env, monkeypatch, catalogue):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
-        assert writer.plan(conn, cluster=1, limit=3, exclude_top=4)["mode"] ==             "rediscover"
+        assert writer.plan(conn, cluster=1, exclude_top=4)["mode"] == "rediscover"
 
     def test_rediscover_drops_the_most_played(self, env, monkeypatch, catalogue):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
-        picks = writer.plan(conn, cluster=1, limit=3, exclude_top=4)["tracks"]
-        assert set(picks["play_count"]) & {100, 90, 80, 70} == set()
-        assert picks["play_count"].tolist() == [60, 50, 40]
+        picks = writer.plan(conn, cluster=1, exclude_top=4)["tracks"]
+        assert set(picks["play_count"]) & {200, 190, 180, 170} == set()
+        assert picks["play_count"].tolist()[:3] == [160, 150, 140]
 
     def test_top_mode_keeps_them(self, env, monkeypatch, catalogue):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
-        picks = writer.plan(conn, cluster=1, limit=3, mode="top")["tracks"]
-        assert picks["play_count"].tolist() == [100, 90, 80]
+        picks = writer.plan(conn, cluster=1, mode="top")["tracks"]
+        assert picks["play_count"].tolist()[:3] == [200, 190, 180]
 
     def test_the_two_modes_differ(self, env, monkeypatch, catalogue):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
-        a = writer.plan(conn, cluster=1, limit=5, exclude_top=4)["tracks"]["video_id"]
-        b = writer.plan(conn, cluster=1, limit=5, mode="top")["tracks"]["video_id"]
+        a = writer.plan(conn, cluster=1, exclude_top=4)["tracks"]["video_id"]
+        b = writer.plan(conn, cluster=1, mode="top")["tracks"]["video_id"]
         assert list(a) != list(b)
 
     def test_exclusion_matches_the_evaluations_hold_out(self, env, monkeypatch,
@@ -377,32 +387,37 @@ class TestModes:
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
         held_out = favourites(catalogue, 4)
-        picks = writer.plan(conn, cluster=1, limit=8, exclude_top=4)["tracks"]
+        picks = writer.plan(conn, cluster=1, exclude_top=4)["tracks"]
         assert not set(picks["video_id"]) & held_out
 
     def test_exclusion_is_global_not_per_cluster(self, env, monkeypatch):
         """The eval removes the library's favourites, not each cluster's."""
         conn, _, _ = env
         frame = pd.DataFrame({
-            "video_id": [f"v{i:02d}bbbbbbb"[:11] for i in range(6)],
-            "title": [f"S{i}" for i in range(6)],
-            "channel": ["A - Topic"] * 6,
-            "play_count": [100, 90, 5, 4, 3, 2],
-            "score": [9.0, 8.0, 3.0, 2.0, 1.0, 0.5],
-            "cluster": [1, 1, 2, 2, 2, 2],
-            "cluster_name": ["A", "A", "B", "B", "B", "B"],
-            "days_since": [1] * 6,
+            "video_id": [f"v{i:02d}bbbbbbb"[:11] for i in range(17)],
+            "title": [f"S{i}" for i in range(17)],
+            "channel": ["A - Topic"] * 17,
+            # 2 global favourites (cluster 1) + 15 native to cluster 2 - big
+            # enough for cluster 2 to clear MIN_CLUSTER_NATIVE on its own.
+            "play_count": [500, 400] + list(range(50, 35, -1)),
+            "score": [9.0, 8.0] + [5.0 - i * 0.1 for i in range(15)],
+            "cluster": [1, 1] + [2] * 15,
+            "cluster_name": ["A", "A"] + ["B"] * 15,
+            "genres": [["hiphop"], ["hiphop"]] + [["pop"]] * 15,
         })
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: frame)
-        # Cluster 2's own top tracks are not favourites of the library, so
-        # excluding the global top 2 must leave cluster 2 untouched.
-        picks = writer.plan(conn, cluster=2, limit=4, exclude_top=2)["tracks"]
-        assert len(picks) == 4
+        # Cluster 2's own tracks are not favourites of the library, so
+        # excluding the global top 2 must leave cluster 2 fully intact - none
+        # of its own material is drawn from (there is nothing to backfill;
+        # cluster 1 is gone entirely once excluded, not just its top tracks).
+        picks = writer.plan(conn, cluster=2, exclude_top=2)["tracks"]
+        assert len(picks) == 15
+        assert set(picks["cluster"]) == {2}
 
     def test_mode_is_recorded_in_the_plan_and_title(self, env, monkeypatch, catalogue):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
-        p = writer.plan(conn, cluster=1, limit=3, exclude_top=4)
+        p = writer.plan(conn, cluster=1, exclude_top=4)
         assert p["excluded_favourites"] == 4
         assert "rediscover" in p["title"]
         assert "excluded" in p["description"]
@@ -410,8 +425,7 @@ class TestModes:
     def test_render_shows_the_mode(self, env, monkeypatch, catalogue):
         conn, ledger, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
-        text = writer.render_plan(writer.plan(conn, cluster=1, limit=3,
-                                              exclude_top=4), ledger)
+        text = writer.render_plan(writer.plan(conn, cluster=1, exclude_top=4), ledger)
         assert "rediscover" in text and "matching the eval" in text
 
     def test_unknown_mode_is_refused(self, env):
@@ -444,8 +458,9 @@ class TestModes:
                                                     catalogue):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: catalogue)
+        # catalogue has 20 rows; excluding all 20 as favourites empties it.
         with pytest.raises(writer.WriteBlocked, match="after excluding favourites"):
-            writer.plan(conn, cluster=1, limit=3, exclude_top=12)
+            writer.plan(conn, cluster=1, exclude_top=20)
 
 
 class TestRetry:
@@ -597,128 +612,189 @@ class TestRetry:
         assert writer.get_row(conn, report["row_id"])["status"] == "rolled_back"
 
 
+def _track(video_id, score, cluster, cluster_name, genres, play_count=1,
+           channel="X - Topic"):
+    return dict(
+        video_id=video_id, title=video_id, channel=channel, play_count=play_count,
+        score=score, cluster=cluster, cluster_name=cluster_name, genres=genres,
+    )
+
+
 class TestBackfill:
-    """Build Brief 3, Part B: a --cluster-name request can run out of
-    material scoring >= MIN_SCORE long before the playlist fills (measured:
-    T-Series has 22 of 492 eligible, Travis Scott 21 of 84). Backfill draws
-    from the nearest clusters by embedding centroid rather than padding with
-    material the model itself scores below the floor.
+    """Build Brief 4: the fixed 45-track target is gone, replaced by three
+    rules (briefs/backfill_constraint.md), all in `writer.py`:
+
+    * FLOOR  - a cluster with fewer than `config.MIN_CLUSTER_NATIVE` eligible
+      members generates no playlist at all.
+    * LENGTH - target length = floor(native / (1 - MAX_BACKFILL_SHARE)).
+    * GUARD  - a backfill candidate must share the cluster's modal genre; the
+      nearest-embedding-centroid path this replaced (Build Brief 3, Part B)
+      pulled musically unrelated tracks (T-Series padded with Travis Scott)
+      and is gone, not flagged off.
     """
 
+    # Fixtures size off these, and TARGET is the real formula (not re-derived
+    # arithmetic), so a future re-tune of the constants can't silently break
+    # these tests - TestLengthFormula below is what pins the formula itself.
+    FLOOR = writer.config.MIN_CLUSTER_NATIVE  # 12
+    SHARE = writer.config.MAX_BACKFILL_SHARE  # 0.25
+    TARGET = writer._target_length(FLOOR)  # 16
+
     @pytest.fixture
-    def multi_cluster(self):
+    def guarded(self):
+        """Cluster 1: exactly FLOOR native 'pop' tracks (the boundary case)
+        plus one below MIN_SCORE. Cluster 2: 5 more 'pop' tracks (matches),
+        scored below native but still >= MIN_SCORE (0.5), so all 5 are
+        genuinely eligible. Cluster 3: 5 'jazz' tracks (does not match)
+        scored *above* cluster 2's - if the guard were ever bypassed, plain
+        score-ranking would pick these first.
+        """
         rows = [
-            dict(video_id="c1trackaaaa", title="C1 Hit A", channel="X - Topic",
-                 play_count=5, score=0.9, cluster=1, cluster_name="Cluster One",
-                 days_since=1, embed_text="c1 hit a"),
-            dict(video_id="c1trackbbbb", title="C1 Hit B", channel="X - Topic",
-                 play_count=3, score=0.7, cluster=1, cluster_name="Cluster One",
-                 days_since=1, embed_text="c1 hit b"),
-            # below MIN_SCORE - must never be selected, backfill or not
-            dict(video_id="c1trackcccc", title="C1 Deep Cut", channel="X - Topic",
-                 play_count=1, score=0.2, cluster=1, cluster_name="Cluster One",
-                 days_since=300, embed_text="c1 deep cut"),
+            _track(f"c1nat{i:05d}", round(0.99 - i * 0.01, 2), 1, "Cluster One", ["pop"])
+            for i in range(self.FLOOR)
         ]
-        for i in range(4):  # cluster 2: near neighbour, 4 eligible
-            rows.append(dict(
-                video_id=f"c2track{i:04d}", title=f"C2 Track {i}", channel="Y - Topic",
-                play_count=4 - i, score=round(0.8 - i * 0.05, 2), cluster=2,
-                cluster_name="Cluster Two", days_since=1, embed_text=f"c2 track {i}",
-            ))
-        for i in range(4):  # cluster 3: far neighbour, 4 eligible
-            rows.append(dict(
-                video_id=f"c3track{i:04d}", title=f"C3 Track {i}", channel="Z - Topic",
-                play_count=4 - i, score=round(0.75 - i * 0.05, 2), cluster=3,
-                cluster_name="Cluster Three", days_since=1, embed_text=f"c3 track {i}",
-            ))
+        rows.append(_track("c1belowfloor", 0.10, 1, "Cluster One", ["pop"]))
+        rows += [
+            _track(f"c2pop{i:05d}", round(0.65 - i * 0.01, 2), 2, "Cluster Two", ["pop"])
+            for i in range(5)
+        ]
+        rows += [
+            _track(f"c3jazz{i:05d}", round(0.85 - i * 0.01, 2), 3, "Cluster Three", ["jazz"])
+            for i in range(5)
+        ]
         return pd.DataFrame(rows)
 
-    @pytest.fixture(autouse=True)
-    def fixed_centroids(self, monkeypatch):
-        """Cluster 2 sits near cluster 1; cluster 3 sits opposite. Fixed and
-        deterministic - no real embedding model involved in this test."""
-        monkeypatch.setattr(
-            writer, "_cluster_centroids",
-            lambda real_frame: {
-                1: np.array([1.0, 0.0]),
-                2: np.array([0.9, 0.1]),
-                3: np.array([-1.0, 0.0]),
-            },
-        )
-
-    def test_deep_cluster_backfills_zero(self, env, monkeypatch, multi_cluster):
+    def test_native_at_floor_boundary_gives_length_16(self, env, monkeypatch, guarded):
         conn, _, _ = env
-        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: multi_cluster)
-        p = writer.plan(conn, cluster=1, limit=2, mode="top")
-        assert p["native_count"] == 2
-        assert p["backfilled_count"] == 0
-        assert p["backfill_by_cluster"] == []
-        assert p["shortfall"] == 0
-        assert list(p["tracks"]["video_id"]) == ["c1trackaaaa", "c1trackbbbb"]
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert p["native_count"] == self.FLOOR == 12
+        assert p["target_length"] == self.TARGET == 16
+        assert p["modal_genre"] == "pop"
 
-    def test_shallow_cluster_backfills_nearest_first_in_score_order(
-        self, env, monkeypatch, multi_cluster
+    def test_backfill_share_never_exceeds_max_and_hits_the_boundary_exactly(
+        self, env, monkeypatch, guarded
     ):
         conn, _, _ = env
-        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: multi_cluster)
-        p = writer.plan(conn, cluster=1, limit=5, mode="top")
-        # 2 native + 3 more needed; cluster 2 (near) supplies all 3 before
-        # cluster 3 (far) is ever touched
-        assert p["native_count"] == 2
-        assert p["backfilled_count"] == 3
-        assert p["backfill_by_cluster"] == [(2, "Cluster Two", 3)]
-        got = list(p["tracks"]["video_id"])
-        assert got[:2] == ["c1trackaaaa", "c1trackbbbb"]
-        assert got[2:] == ["c2track0000", "c2track0001", "c2track0002"]
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert p["count"] == self.TARGET
+        assert p["backfilled_count"] == 4
+        share = p["backfilled_count"] / p["count"]
+        assert share <= self.SHARE  # "never exceed" - `<=`, not `<`
+        assert share == self.SHARE  # this fixture sits exactly on the boundary
 
-    def test_every_returned_track_clears_min_score(self, env, monkeypatch, multi_cluster):
+    def test_guard_prefers_genre_match_over_a_higher_score(self, env, monkeypatch, guarded):
         conn, _, _ = env
-        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: multi_cluster)
-        p = writer.plan(conn, cluster=1, limit=8, mode="top")
-        assert (p["tracks"]["score"] >= writer.config.MIN_SCORE).all()
-        assert "c1trackcccc" not in set(p["tracks"]["video_id"])
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        native_ids = {f"c1nat{i:05d}" for i in range(self.FLOOR)}
+        backfilled_ids = set(p["tracks"]["video_id"]) - native_ids
+        # top 4 of cluster 2's 5 matching tracks, by score
+        assert backfilled_ids == {f"c2pop{i:05d}" for i in range(4)}
+        # cluster 3's higher-scoring but non-matching tracks are never touched
+        assert not (backfilled_ids & {f"c3jazz{i:05d}" for i in range(5)})
+        assert p["backfill_by_cluster"] == [(2, "Cluster Two", 4)]
 
-    def test_short_of_limit_returns_fewer_never_pads_below_floor(
-        self, env, monkeypatch, multi_cluster
+    def test_every_track_is_native_or_shares_the_modal_genre(self, env, monkeypatch, guarded):
+        """The guard's actual contract, not just the share cap or a fixed
+        expected list: this is what would catch it silently relaxing."""
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        modal = p["modal_genre"]
+        for _, row in p["tracks"].iterrows():
+            assert row["cluster"] == 1 or modal in tidy_genres(row["genres"])
+
+    def test_every_returned_track_clears_min_score(self, env, monkeypatch, guarded):
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert (p["tracks"]["score"] >= writer.config.MIN_SCORE).all()
+        assert "c1belowfloor" not in set(p["tracks"]["video_id"])
+
+    def test_title_pinned_to_requested_cluster_when_backfill_contributes(
+        self, env, monkeypatch, guarded
     ):
         conn, _, _ = env
-        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: multi_cluster)
-        # 2 + 4 + 4 = 10 eligible total, well short of 15
-        p = writer.plan(conn, cluster=1, limit=15, mode="top")
-        assert p["count"] == 10
-        assert p["shortfall"] == 5
-        assert (p["tracks"]["score"] >= writer.config.MIN_SCORE).all()
-        assert p["backfill_by_cluster"] == [(2, "Cluster Two", 4), (3, "Cluster Three", 4)]
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert p["backfilled_count"] > 0
+        assert p["title"] == "taste-engine: Cluster One"
 
     def test_backfilled_tracks_never_intersect_held_out_favourites(
-        self, env, monkeypatch, multi_cluster
+        self, env, monkeypatch, guarded
     ):
         conn, _, _ = env
-        boosted = multi_cluster.copy()
-        boosted.loc[boosted["video_id"] == "c2track0000", "play_count"] = 999
+        boosted = guarded.copy()
+        boosted.loc[boosted["video_id"] == "c2pop00000", "play_count"] = 999
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: boosted)
-        p = writer.plan(conn, cluster=1, limit=5, exclude_top=1)  # mode defaults to rediscover
-        assert "c2track0000" not in set(p["tracks"]["video_id"])
+        p = writer.plan(conn, cluster=1, exclude_top=1)  # mode defaults to rediscover
+        assert "c2pop00000" not in set(p["tracks"]["video_id"])
 
         from taste_engine.recommend import favourites
 
         held_out = favourites(boosted, 1)
         assert not (set(p["tracks"]["video_id"]) & held_out)
 
-    def test_title_is_pinned_to_the_requested_cluster(self, env, monkeypatch, multi_cluster):
-        """Row 0 can be backfilled when a cluster has zero eligible tracks of
-        its own; the title must not silently become the neighbour's."""
+    def test_cluster_below_floor_raises_and_generates_no_playlist(self, env, monkeypatch):
         conn, _, _ = env
-        empty_native = multi_cluster[multi_cluster["cluster"] != 1].copy()
-        starved = pd.concat([
-            pd.DataFrame([dict(
-                video_id="c1belowfloor", title="C1 Only Track", channel="X - Topic",
-                play_count=1, score=0.1, cluster=1, cluster_name="Cluster One",
-                days_since=300, embed_text="c1 only track",
-            )]),
-            empty_native,
-        ]).reset_index(drop=True)
-        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: starved)
-        p = writer.plan(conn, cluster=1, limit=3, mode="top")
-        assert p["native_count"] == 0
-        assert p["title"] == "taste-engine: Cluster One"
+        rows = [
+            _track(f"c1nat{i:05d}", round(0.9 - i * 0.01, 2), 1, "Cluster One", ["pop"])
+            for i in range(self.FLOOR - 1)  # one short of the floor
+        ]
+        thin = pd.DataFrame(rows)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: thin)
+        with pytest.raises(writer.WriteBlocked, match="below the floor"):
+            writer.plan(conn, cluster=1, mode="top")
+        assert writer.list_written(conn).empty
+
+    def test_rare_modal_genre_returns_short_rather_than_borrowing(self, env, monkeypatch):
+        conn, _, _ = env
+        rows = [
+            _track(f"c1nat{i:05d}", round(0.9 - i * 0.01, 2), 1, "Cluster One",
+                   ["music of asia"])
+            for i in range(self.FLOOR)
+        ]
+        # plenty of eligible material outside the cluster - none of it shares
+        # the modal genre, so none of it may be borrowed
+        rows += [
+            _track(f"c2other{i:05d}", round(0.99 - i * 0.01, 2), 2, "Cluster Two", ["pop"])
+            for i in range(20)
+        ]
+        rare = pd.DataFrame(rows)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: rare)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert p["modal_genre"] == "music of asia"
+        assert p["backfilled_count"] == 0
+        assert p["backfill_by_cluster"] == []
+        assert p["count"] == self.FLOOR
+        assert p["shortfall"] == p["target_length"] - self.FLOOR > 0
+
+    def test_unlabeled_native_block_returns_short_without_crashing(self, env, monkeypatch):
+        """No modal genre is computable at all - the guard can never be
+        satisfied, so it admits nothing rather than being skipped."""
+        conn, _, _ = env
+        rows = [
+            _track(f"c1nat{i:05d}", round(0.9 - i * 0.01, 2), 1, "Cluster One", [])
+            for i in range(self.FLOOR)
+        ]
+        rows += [
+            _track(f"c2other{i:05d}", 0.9, 2, "Cluster Two", ["pop"])
+            for i in range(20)
+        ]
+        unlabeled = pd.DataFrame(rows)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: unlabeled)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert p["modal_genre"] is None
+        assert p["backfilled_count"] == 0
+        assert p["count"] == self.FLOOR
+
+
+class TestLengthFormula:
+    """floor(native / (1 - MAX_BACKFILL_SHARE)) - the exact cases the brief
+    names, computed independently of the fixture-based tests above."""
+
+    @pytest.mark.parametrize("native, expected_target", [(12, 16), (22, 29), (29, 38)])
+    def test_target_length_formula(self, native, expected_target):
+        assert writer._target_length(native) == expected_target
