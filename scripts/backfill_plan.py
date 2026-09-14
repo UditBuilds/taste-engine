@@ -1,10 +1,20 @@
-"""Backfill dry-run plan - briefs/backfill_constraint.md.
+"""Backfill dry-run plan - briefs/backfill_constraint.md, briefs/backfill_rank.md.
 
 FLOOR (`config.MIN_CLUSTER_NATIVE`), LENGTH (`config.MAX_BACKFILL_SHARE`
-formula) and GUARD (genre match) are implemented in `writer.py`/`config.py`
-and exercised here exactly as `writer.plan(mode="rediscover")` runs them for
+formula), GUARD (genre match) and RANK (distance to the requesting cluster's
+own centroid, ascending) are implemented in `writer.py`/`config.py` and
+exercised here exactly as `writer.plan(mode="rediscover")` runs them for
 every cluster that clears the floor - this script adds no new selection
 logic of its own for the real plan.
+
+The "before" (score-ranked) distinct-backfill-track figures quoted below are
+not re-derived by this script: they come from
+`scripts/compare_backfill_ranking.py`, which replays the old ranking rule
+inline against this same real dataset (a frozen replica - the old ranking
+itself is gone, not kept around as a permanent code path in `writer.py`) and
+compares it against this script's own `writer.plan()`-based numbers. Run
+that script to reproduce the before-figure directly rather than trusting the
+constant hardcoded below.
 
 One thing it does add, report-only, never fed back into `writer.plan()`:
 alongside each cluster's real (naive) admit count, it also computes what a
@@ -94,6 +104,37 @@ def _strict_admit(
     return modal, min(admit, deficit)
 
 
+def _pre_ceiling_candidates(
+    rediscover_frame: pd.DataFrame, cluster: int, modal_genre: str
+) -> list[tuple[str, str, float]]:
+    """Every genre-matching candidate and its distance, ignoring
+    MAX_BACKFILL_DISTANCE entirely - a shadow computation in the same spirit
+    as `_strict_admit` above, reaching into writer's private helpers
+    (`_reduced_embeddings`, `_cluster_centroids`, `_distances_to_centroid`)
+    directly rather than through `writer.plan()`, since `plan()` now applies
+    the ceiling and so never returns what it excluded. Report-only: never
+    fed back into `writer.plan()`. Used to say plainly what the ceiling
+    actually dropped, with a real measured distance, not a number carried
+    over from a run before the ceiling existed.
+    """
+    real = rediscover_frame[rediscover_frame["cluster"] >= 0]
+    eligible = real[real["score"] >= config.MIN_SCORE]
+    outside = eligible[eligible["cluster"] != cluster].copy()
+    outside["genres_tidy"] = outside["genres"].map(tidy_genres)
+    mask = outside["genres_tidy"].map(lambda gl: modal_genre in gl).astype(bool)
+    matching = outside[mask]
+    if matching.empty:
+        return []
+    reduced = writer._reduced_embeddings(real)
+    centroid = writer._cluster_centroids(real, reduced)[cluster]
+    distances = writer._distances_to_centroid(real, matching["video_id"], centroid, reduced)
+    out = [
+        (str(r["title"]), str(r["video_id"]), distances[str(r["video_id"])])
+        for _, r in matching.iterrows()
+    ]
+    return sorted(out, key=lambda t: t[2])
+
+
 def _fmt_genre(g: str | None) -> str:
     return repr(g) if g else "none"
 
@@ -166,7 +207,7 @@ def main() -> int:
 
         # ---- per qualifying cluster: the real plan, plus the strict shadow ----
         rows = []
-        backfill_provenance: dict[int, list[tuple[str, str]]] = {}
+        backfill_provenance: dict[int, list[tuple[str, str, float, str]]] = {}
         mismatches = []
         for cid in sorted(cleared_excluded):
             p = writer.plan(conn, cluster=cid, mode="rediscover")
@@ -179,10 +220,27 @@ def main() -> int:
                 rediscover_eligible, cid, p["native_count"], p["target_length"],
                 non_discriminative,
             )
+            # naive_matched: genre-guard-only admit count, ignoring the
+            # ceiling - capped at deficit exactly like _strict_admit caps
+            # strict_admit, so the two columns in "Naive vs strict genre
+            # guard" below compare guard to guard. naive_admit (below) stays
+            # post-ceiling: it's what actually ships, used in the *other*
+            # table. The two agree except where the ceiling changed
+            # anything (T-Series, this run) - conflating them there would
+            # make the naive guard look stricter than the strict guard,
+            # which is backwards by construction.
+            deficit = p["target_length"] - p["native_count"]
+            naive_matched = 0
+            if p["modal_genre"] and deficit > 0:
+                naive_matched = min(
+                    len(_pre_ceiling_candidates(rediscover_frame, cid, p["modal_genre"])),
+                    deficit,
+                )
             rows.append({
                 "cluster": cid, "name": names[cid], "native": p["native_count"],
                 "target_length": p["target_length"],
                 "naive_modal": p["modal_genre"], "naive_admit": p["backfilled_count"],
+                "naive_matched": naive_matched,
                 "strict_modal": strict_modal, "strict_admit": strict_admit,
                 "final_count": p["count"], "shortfall": p["shortfall"],
                 "units": p["units"],
@@ -191,8 +249,125 @@ def main() -> int:
                 tracks = p["tracks"]
                 backfilled = tracks[tracks["cluster"] != cid]
                 backfill_provenance[cid] = [
-                    (str(r["title"]), p["modal_genre"]) for _, r in backfilled.iterrows()
+                    (str(r["title"]), p["modal_genre"], float(r["distance"]), str(r["video_id"]))
+                    for _, r in backfilled.iterrows()
                 ]
+
+        # ---- distance ranking: distinct-track differentiation, briefs/backfill_rank.md ----
+        all_backfill_ids = [
+            vid for tracks in backfill_provenance.values() for *_, vid in tracks
+        ]
+        all_distances = [
+            d for tracks in backfill_provenance.values() for _, _, d, _ in tracks
+        ]
+        distinct_after = len(set(all_backfill_ids))
+        largest_after = max((len(t) for t in backfill_provenance.values()), default=0)
+        # Reproduce with scripts/compare_backfill_ranking.py - not
+        # re-derived by this script; see the module docstring.
+        DISTINCT_BEFORE = 11
+        SLOTS_BEFORE = 52
+        LARGEST_BEFORE = 8
+
+        # Searched over every QUALIFYING cluster (cleared_excluded), not just
+        # backfill_provenance's keys - MAX_BACKFILL_DISTANCE can legitimately
+        # leave T-Series with zero admitted backfill (its one candidate,
+        # Doja Cat, sits at distance 1.1166 >= the 1.0 ceiling), and that is
+        # a real, reportable outcome, not "not computable".
+        t_series_cid = next(
+            (cid for cid in cleared_excluded if "t-series" in names[cid].lower()), None
+        )
+        t_series_distances = sorted(
+            d for _, _, d, _ in backfill_provenance.get(t_series_cid, [])
+        )
+        doja_cat = next(
+            ((title, d) for title, _, d, _ in backfill_provenance.get(t_series_cid, [])
+             if "doja cat" in title.lower()),
+            None,
+        )
+
+        # Is Doja Cat's distance the single worst admitted anywhere, and by
+        # how much - the fact the distance-ceiling decision actually turned
+        # on. Computed from backfill_provenance, not eyeballed off the table
+        # below. With MAX_BACKFILL_DISTANCE=1.0 now enforced (Doja Cat's
+        # 1.1166 >= 1.0), Doja Cat itself no longer appears in
+        # backfill_provenance at all - this is measured separately, straight
+        # off T-Series's own genre-guard admit count and eligible pool,
+        # rather than found in the (now ceiling-filtered) provenance data.
+        t_series_row = next((r for r in rows if r["cluster"] == t_series_cid), None)
+        # naive_admit==0 alone is ambiguous - it's also what a genuine
+        # genre-guard miss looks like (0 candidates ever matched, ceiling
+        # irrelevant). Disambiguate by actually recomputing the pre-ceiling
+        # candidate pool: only a NON-empty pre-ceiling pool with a post-
+        # ceiling admit of 0 means the ceiling is what did the excluding.
+        t_series_pre_ceiling = (
+            _pre_ceiling_candidates(rediscover_frame, t_series_cid, t_series_row["naive_modal"])
+            if t_series_row and t_series_row["naive_modal"] else []
+        )
+        ceiling_excluded_t_series_only_match = bool(
+            t_series_row and t_series_row["naive_admit"] == 0 and t_series_pre_ceiling
+        )
+
+        all_with_context = [
+            (title, cname, d, cid)
+            for cid, tracks in backfill_provenance.items()
+            for title, _genre, d, _vid in tracks
+            for cname in [names[cid]]
+        ]
+        ceiling_note = None
+        if doja_cat is not None and all_with_context:
+            ranked_desc = sorted(all_with_context, key=lambda t: t[2], reverse=True)
+            worst = ranked_desc[0]
+            is_worst = worst[2] == doja_cat[1]
+            second = ranked_desc[1] if len(ranked_desc) > 1 else None
+            ceiling_note = {
+                "is_global_max": is_worst,
+                "second_title": second[0] if second else None,
+                "second_cluster": second[1] if second else None,
+                "second_distance": second[2] if second else None,
+                "n_t_series_candidates": len(t_series_distances),
+            }
+
+        def _median(xs: list[float]) -> float | None:
+            if not xs:
+                return None
+            s = sorted(xs)
+            mid = len(s) // 2
+            return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+
+        print(f"distinct backfill tracks: before(score-ranked)={DISTINCT_BEFORE} of "
+              f"{SLOTS_BEFORE} slots, largest single={LARGEST_BEFORE}  ->  "
+              f"after(distance-ranked)={distinct_after} of {len(all_backfill_ids)} "
+              f"slots, largest single={largest_after}")
+        if all_distances:
+            print(f"distance distribution (all admitted backfill, n={len(all_distances)}): "
+                  f"min={min(all_distances):.4f} median={_median(all_distances):.4f} "
+                  f"max={max(all_distances):.4f}")
+        if t_series_cid is not None:
+            print(f"T-Series distances ({len(t_series_distances)} admitted): "
+                  + ", ".join(f"{d:.4f}" for d in t_series_distances))
+            print(f"T-Series admits Doja Cat: {'yes' if doja_cat else 'no'}"
+                  + (f", distance={doja_cat[1]:.4f}" if doja_cat else ""))
+            if ceiling_note and ceiling_note["is_global_max"]:
+                print(f"  Doja Cat's distance is the MAXIMUM of all "
+                      f"{len(all_distances)} admitted distances this run. Next-"
+                      f"highest: {ceiling_note['second_distance']:.4f} "
+                      f"({ceiling_note['second_title']!r}, {ceiling_note['second_cluster']}). "
+                      f"T-Series has exactly {ceiling_note['n_t_series_candidates']} "
+                      "genre-matching candidate(s) in the whole eligible pool, so "
+                      "there is nothing else for it to rank against.")
+            elif ceiling_excluded_t_series_only_match:
+                excluded_desc = "; ".join(
+                    f"{title!r} at {d:.4f}" for title, _vid, d in t_series_pre_ceiling
+                )
+                print(f"  MAX_BACKFILL_DISTANCE={config.MAX_BACKFILL_DISTANCE} excluded "
+                      f"every genre-matching candidate T-Series had ({excluded_desc or 'none found'}): "
+                      f"0 backfilled instead of {len(t_series_pre_ceiling)}, final "
+                      f"playlist {t_series_row['final_count']} tracks instead of "
+                      f"{t_series_row['final_count'] + len(t_series_pre_ceiling)}.")
+        else:
+            print("T-Series: not computable - no cluster in this run's qualifying "
+                  "pool (cleared_excluded) matched 't-series'")
+        print()
 
         if mismatches:
             print("WARNING - native count mismatch between this script and "
@@ -223,10 +398,12 @@ def main() -> int:
 
         # ---- assemble the report ----
         lines = []
-        lines.append("# Backfill Plan - Floor, Length, Genre Guard\n")
-        lines.append("Brief: `briefs/backfill_constraint.md`. Dry-run only, no API "
-                      "calls, no `--commit`. New code: `scripts/backfill_plan.py`. "
-                      "Rule implemented in `writer.py`/`config.py` "
+        lines.append("# Backfill Plan - Floor, Length, Genre Guard, Distance Rank\n")
+        lines.append("Briefs: `briefs/backfill_constraint.md` (floor, length, guard), "
+                      "`briefs/backfill_rank.md` (distance ranking within the "
+                      "guarded pool). Dry-run only, no API calls, no `--commit`. "
+                      "Script: `scripts/backfill_plan.py`. Rules implemented in "
+                      "`writer.py`/`config.py` "
                       f"(`MIN_CLUSTER_NATIVE={config.MIN_CLUSTER_NATIVE}`, "
                       f"`MAX_BACKFILL_SHARE={config.MAX_BACKFILL_SHARE}`).\n")
 
@@ -289,22 +466,37 @@ def main() -> int:
             "ran, since a label that common cannot be what discriminates a "
             "cluster's sound from its neighbours'. **Neither the length nor the "
             "shipped selection reads this column; it never feeds back into "
-            "`writer.plan()`.**\n"
+            "`writer.plan()`.** Both columns below are guard-only (genre "
+            "match, capped at deficit) with **no distance ceiling applied to "
+            "either** - naive vs strict is a guard-to-guard comparison, so "
+            "conflating one side with the post-ceiling shipped count would "
+            "make the naive guard look stricter than it is by construction "
+            "(it never can be - naive matches a superset of what strict "
+            "matches). Where the ceiling actually cuts a cluster's backfill "
+            "is reported below, in Distance ranking, and in the *next* "
+            "table's `backfilled` column, which does reflect it.\n"
         )
         lines.append(f"Non-discriminative labels found (touch >"
                       f"{NON_DISCRIMINATIVE_SHARE:.0%} of {n_labeled_clusters} "
                       "labeled clusters): " + (", ".join(sorted(non_discriminative)) or "none") + "\n")
-        lines.append("\n| cluster | native | naive modal | naive admit | "
-                      "strict modal | strict admit |")
+        lines.append("\n| cluster | native | naive modal | naive admit "
+                      "(guard only) | strict modal | strict admit |")
         lines.append("|---|---|---|---|---|---|")
         for r in rows:
             lines.append(
                 f"| {r['name']} | {r['native']} | {_fmt_genre(r['naive_modal'])} | "
-                f"{r['naive_admit']} | {_fmt_genre(r['strict_modal'])} | "
+                f"{r['naive_matched']} | {_fmt_genre(r['strict_modal'])} | "
                 f"{r['strict_admit']} |"
             )
 
         lines.append("\n## Per-cluster dry-run plan (naive guard - what ships)\n")
+        lines.append(
+            "`backfilled` here is the actual shipped count: guard **and** "
+            "the `MAX_BACKFILL_DISTANCE` ceiling both applied, exactly what "
+            "`writer.plan()` returns. It can be lower than the guard-only "
+            "`naive admit` column in the table above - see Distance ranking "
+            "below for which clusters (if any) that ceiling affected.\n"
+        )
         lines.append("| cluster | native | backfilled | final length | target | "
                       "modal genre | short by | quota units |")
         lines.append("|---|---|---|---|---|---|---|---|")
@@ -316,12 +508,114 @@ def main() -> int:
                 f"{r['units']:,} |"
             )
 
-        lines.append("\n### Backfill provenance (native cluster -> admitting genre)\n")
+        lines.append("\n## Distance ranking (briefs/backfill_rank.md)\n")
+        lines.append(
+            "The genre GUARD above is unchanged - it still only filters the "
+            "candidate pool. What changed is how that filtered pool is "
+            "ranked: by cosine distance (in the PCA-reduced embedding space "
+            "HDBSCAN clustered in) to the *requesting* cluster's own "
+            "centroid, ascending, tie-broken (distance asc, score desc, "
+            "video_id asc) - not by global score, which was identical for "
+            "every cluster and is what made backfill collapse onto the same "
+            "handful of tracks. `_clusters_by_distance` (nearest whole "
+            "cluster) is not restored.\n"
+        )
+        lines.append(
+            f"- Distinct backfill tracks: **before** (score-ranked) "
+            f"**{DISTINCT_BEFORE}** distinct filling {SLOTS_BEFORE} slots "
+            f"across {len(rows)} playlists, largest single playlist "
+            f"{LARGEST_BEFORE} - **after** (distance-ranked) "
+            f"**{distinct_after}** distinct filling {len(all_backfill_ids)} "
+            f"slots, largest single playlist {largest_after}. (The brief's "
+            "own recollection was \"10 distinct ... 52 slots\"; the "
+            f"before-figure measured here is {DISTINCT_BEFORE}, not 10 - "
+            "reproduce it with `scripts/compare_backfill_ranking.py`.)\n"
+        )
+        if all_distances:
+            lines.append(
+                f"- Distance distribution across all {len(all_distances)} "
+                f"admitted backfill tracks: min **{min(all_distances):.4f}**, "
+                f"median **{_median(all_distances):.4f}**, max "
+                f"**{max(all_distances):.4f}**.\n"
+            )
+        else:
+            lines.append("- Distance distribution: not computable - no cluster "
+                          "backfilled anything this run.\n")
+        if t_series_cid is not None:
+            if t_series_distances:
+                lines.append(
+                    f"- T-Series distance distribution ({len(t_series_distances)} "
+                    f"admitted): min **{min(t_series_distances):.4f}**, median "
+                    f"**{_median(t_series_distances):.4f}**, max "
+                    f"**{max(t_series_distances):.4f}**. Every admitted distance, "
+                    "ascending: " + ", ".join(f"{d:.4f}" for d in t_series_distances) + "\n"
+                )
+            else:
+                lines.append(
+                    "- T-Series distance distribution: not computable - T-Series "
+                    "admitted 0 backfill tracks this run "
+                    + (f"(MAX_BACKFILL_DISTANCE={config.MAX_BACKFILL_DISTANCE} "
+                       "excluded its only genre-matching candidate - see below)"
+                       if ceiling_excluded_t_series_only_match else "") + ".\n"
+                )
+            lines.append(
+                f"- T-Series still admits Doja Cat: **{'yes' if doja_cat else 'no'}**"
+                + (f", at distance **{doja_cat[1]:.4f}**." if doja_cat else ".") + "\n"
+            )
+            if ceiling_note and ceiling_note["is_global_max"]:
+                lines.append(
+                    f"- That distance is the **maximum of all {len(all_distances)} "
+                    "admitted backfill distances this run** - not just high for "
+                    f"T-Series. The next-highest anywhere is "
+                    f"**{ceiling_note['second_distance']:.4f}** "
+                    f"({ceiling_note['second_title']!r}, admitted into "
+                    f"{ceiling_note['second_cluster']}'s playlist). T-Series has "
+                    f"exactly **{ceiling_note['n_t_series_candidates']}** "
+                    "genre-matching candidate in the whole eligible pool, so "
+                    "distance ranking has nothing to choose between - the guard "
+                    "admits it regardless of how far it is, because there is no "
+                    "alternative to rank it against. A distance ceiling set "
+                    f"anywhere in ({ceiling_note['second_distance']:.4f}, "
+                    f"{doja_cat[1]:.4f}] would remove this one track and only "
+                    "this one track across the entire run, turning T-Series's "
+                    "playlist one track shorter; a ceiling at or below "
+                    f"{ceiling_note['second_distance']:.4f} would start "
+                    "cutting into other clusters' backfill too. Whether to add "
+                    "one is Udit's call, per the brief.\n"
+                )
+            elif ceiling_excluded_t_series_only_match:
+                excluded_desc = "; ".join(
+                    f"**{title}** at distance **{d:.4f}**"
+                    for title, _vid, d in t_series_pre_ceiling
+                )
+                lines.append(
+                    f"- **MAX_BACKFILL_DISTANCE={config.MAX_BACKFILL_DISTANCE} now "
+                    "excludes every genre-matching candidate T-Series had** "
+                    f"(recomputed directly, ignoring the ceiling, for this "
+                    f"report: {excluded_desc or 'none found'}). T-Series's "
+                    f"final playlist is **{t_series_row['final_count']} tracks** "
+                    f"this run, {len(t_series_pre_ceiling)} fewer than the "
+                    f"{t_series_row['final_count'] + len(t_series_pre_ceiling)} it "
+                    "would have reached without the ceiling. This is the ceiling "
+                    "doing exactly what it was added to do: T-Series had exactly "
+                    "one genre-matching candidate anywhere in its eligible pool, "
+                    "so distance ranking had nothing to choose between, and the "
+                    "guard would have admitted it regardless of how far it sat - "
+                    "the ceiling is the only thing that can refuse it.\n"
+                )
+        else:
+            lines.append("- T-Series: not computable - no cluster in this run's "
+                          "qualifying pool matched 't-series'.\n")
+
+        lines.append("\n### Backfill provenance (native cluster -> admitting genre, distance)\n")
         if backfill_provenance:
             for cid, tracks in backfill_provenance.items():
                 lines.append(f"\n**{names[cid]}**\n")
-                for title, genre in tracks:
-                    lines.append(f"- {title[:70]}  -  admitted by genre `{genre}`")
+                for title, genre, distance, _vid in sorted(tracks, key=lambda t: t[2]):
+                    lines.append(
+                        f"- {title[:70]}  -  admitted by genre `{genre}`, "
+                        f"distance {distance:.4f}"
+                    )
         else:
             lines.append("\nNo qualifying cluster backfilled anything.\n")
 

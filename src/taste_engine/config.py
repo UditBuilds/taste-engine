@@ -117,6 +117,46 @@ MIN_SCORE = 0.5
 MIN_CLUSTER_NATIVE = 12
 MAX_BACKFILL_SHARE = 0.25
 
+# --- backfill ranking and ceiling (briefs/backfill_rank.md) -----------------
+# GUARD (above) only filters the candidate pool by genre; it never said which
+# genre-matching candidate to prefer, and score ranked what was left - but
+# score does not depend on which cluster is asking, so every shallow
+# cluster's backfill collapsed onto the same handful of globally top-scored
+# tracks (measured: 10 distinct tracks filling 52 slots across ten
+# playlists, several byte-identical - reports/backfill_plan.md). RANK
+# replaces score with cosine distance to the *requesting* cluster's own
+# centroid (writer._select_with_backfill), ascending. That needs no constant
+# here - it is a sort order, not a threshold.
+#
+# MAX_BACKFILL_DISTANCE is the one threshold RANK does need. Cosine distance
+# ranges 0 (identical direction) to 2 (opposite direction); distance > 1.0
+# means negative cosine similarity - the candidate points AWAY from the
+# cluster's centroid, not merely far from it. That is a geometric bound, not
+# a value tuned to exclude any specific track: it was fixed before measuring
+# which tracks it would affect, and deliberately left at 1.0 rather than
+# moved to the 0.738/1.117 gap reports/backfill_plan.md found between the
+# next-worst admitted distance anywhere (0.7380) and T-Series's only
+# candidate (Doja Cat, distance 1.1166, the sole genre match in its entire
+# eligible pool).
+#
+# T-Series's modal genre (writer._modal_genre) is an exact 21-21 vote tie
+# between "music of asia" and "pop" - found 2026-09-14 when it, and a sibling
+# tie on Metro Boomin, made _modal_genre's tie-break depend on Python's
+# per-process string hash seed (Counter.most_common(1)'s insertion-order tie
+# resolving via a Python set's seed-dependent iteration order). Fixed the
+# same day: _modal_genre now breaks ties deterministically at selection time
+# (highest count, then alphabetically-first label), independent of hash seed
+# - see its docstring. "music of asia" < "pop" alphabetically, so T-Series
+# deterministically lands on "music of asia" and Doja Cat really is its only
+# genre-matching candidate, not one of two live outcomes. Re-verified 10/10
+# process runs stable post-fix. See reports/backfill_plan.md's "Genre
+# tie-break" section for the full before/after.
+#
+# A candidate at or above the ceiling is dropped outright; the playlist
+# comes back SHORT rather than relaxing it, exactly like GUARD does when
+# nothing matches genre at all.
+MAX_BACKFILL_DISTANCE = 1.0
+
 # --- write-back retry policy -------------------------------------------------
 # First live write (2026-09-13): playlistItems.insert returned 409
 # SERVICE_UNAVAILABLE on the second insert. The error path only handled 403

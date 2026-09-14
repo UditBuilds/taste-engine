@@ -28,6 +28,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
+import numpy as np
 import pandas as pd
 
 from . import config
@@ -77,11 +78,36 @@ def _modal_genre(genre_lists) -> tuple[str | None, int]:
 
     Same definition reports/genre_coverage.md used: each labeled member votes
     once per distinct label it carries (`set(gl)`, so a track with the same
-    label twice cannot inflate it), the label with the most votes wins, and a
-    tie goes to whichever label was first encountered (`Counter.most_common`
-    order) - unobserved on this corpus (genre_coverage.md found 0 of 37
-    clusters ambiguous) but deterministic given a fixed input order either
-    way. `None, 0` when no member carries any label at all.
+    label twice cannot inflate it), the label with the most votes wins.
+
+    Ties are broken deterministically at SELECTION time - highest count
+    first, then alphabetically-first label - via `min(counts.items(), key=
+    lambda kv: (-kv[1], kv[0]))`. This deliberately does NOT use
+    `Counter.most_common(1)`: that resolves a tie by dict-insertion order,
+    which traces back to iterating `set(gl)` above, and Python randomises
+    string hashing per process by default - so `most_common(1)`'s tie-break
+    is not stable across process runs, only within one.
+
+    FIXED 2026-09-14, per Udit, after being found live on this corpus, not
+    hypothetical: two qualifying clusters carry an exact vote tie for the
+    top spot, Metro Boomin ("hip hop" vs "pop", 26-26) and T-Series ("music
+    of asia" vs "pop", 21-21). Before this fix, `_modal_genre` fed GUARD
+    (`_select_with_backfill`, the actual `writer.plan()` / `--commit` path)
+    a genre that depended on nothing more principled than the process's hash
+    seed - confirmed empirically, 10 separate process runs split Metro
+    Boomin's tie 5/5. See reports/backfill_plan.md's "Distance ranking"
+    section for what each side of that tie used to ship. This fix's
+    alphabetical rule happens to prefer "hip hop" and "music of asia" over
+    "pop" for these two clusters (h, m < p) - a consequence of the rule, not
+    a reason for it; the rule was fixed (highest count, then alphabetical)
+    before checking what it would give either cluster.
+    genre_coverage.md's "0 of 37 clusters ambiguous" is not contradicted by
+    any of this - it defines ambiguous as "no label above 50% of labeled
+    eligible members" (its line 117), which both labels clear simultaneously
+    in an exact tie like this one, so that check was never designed to catch
+    this case; it is a real gap in that check, not a wrong number there.
+
+    `None, 0` when no member carries any label at all.
     """
     labeled = [gl for gl in genre_lists if gl]
     if not labeled:
@@ -89,8 +115,96 @@ def _modal_genre(genre_lists) -> tuple[str | None, int]:
     counts: Counter[str] = Counter()
     for gl in labeled:
         counts.update(set(gl))
-    modal_genre, _ = counts.most_common(1)[0]
+    modal_genre, _ = min(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return modal_genre, len(labeled)
+
+
+def _reduced_embeddings(real_frame: pd.DataFrame) -> np.ndarray:
+    """PCA-reduced embedding per row of `real_frame`, positionally aligned.
+
+    `embed.reduce_dims` fits a fresh PCA on whatever matrix it is given, so
+    two calls over two different row-sets land in incomparable spaces - a
+    centroid computed from one fit and a track vector from another would
+    yield cosine distances that look fine but mean nothing. Every caller
+    that needs centroids or individual track vectors to be comparable must
+    go through this one function over the same `real_frame`, which is why
+    `_cluster_centroids` sources from it rather than embedding on its own.
+
+    Row `i` of the returned array corresponds to row `i` of
+    `real_frame.reset_index(drop=True)` (`embed_text` is read via `list(...)`,
+    which iterates in that same order).
+    """
+    from . import embed
+
+    texts = list(real_frame["embed_text"])
+    vectors = embed.embed_texts(texts, use_cache=True)
+    return embed.reduce_dims(vectors)
+
+
+def _cluster_centroids(
+    real_frame: pd.DataFrame, reduced: np.ndarray | None = None
+) -> dict[int, np.ndarray]:
+    """Mean PCA-reduced embedding per real (non-noise) cluster.
+
+    Sourced from `_reduced_embeddings` re-derived locally from the cached
+    MiniLM embeddings already computed for this corpus - `embed_texts` keys
+    its cache by the exact text list, so this is a cache hit (measured:
+    ~0.05s for the full library), not a re-embed. That keeps the backfill's
+    notion of "nearest" local to this function and `_reduced_embeddings`
+    rather than threading reduced vectors through `recommend.build()`'s
+    contract and every caller of it, `evaluate.py` included.
+
+    `reduced` lets a caller that also needs individual track vectors (see
+    `_distances_to_centroid`) pass in one shared `_reduced_embeddings` result
+    instead of each computing its own: two separate calls would each fit a
+    fresh PCA (`embed.reduce_dims` has no cache), landing centroids and
+    per-track vectors in two different - and mutually incomparable - spaces.
+    Passing the same array through is what makes "one fit" structural rather
+    than merely true by coincidence of identical, deterministic inputs.
+    """
+    if reduced is None:
+        reduced = _reduced_embeddings(real_frame)
+    positions = np.asarray(real_frame["cluster"])
+    centroids: dict[int, np.ndarray] = {}
+    for cid in np.unique(positions):
+        centroids[int(cid)] = reduced[positions == cid].mean(axis=0)
+    return centroids
+
+
+def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
+    a_norm = a / max(float(np.linalg.norm(a)), 1e-12)
+    b_norm = b / max(float(np.linalg.norm(b)), 1e-12)
+    return 1.0 - float(np.dot(a_norm, b_norm))
+
+
+def _distances_to_centroid(
+    real_frame: pd.DataFrame,
+    candidate_ids: pd.Series,
+    centroid: np.ndarray,
+    reduced: np.ndarray | None = None,
+) -> dict[str, float]:
+    """Cosine distance from each of `candidate_ids`' own reduced embedding to
+    `centroid`, in the same PCA-fitted space `_cluster_centroids` used to
+    compute it - literally the same array when the caller passes `reduced`
+    through from a single shared `_reduced_embeddings(real_frame)` call,
+    rather than each function fitting its own PCA over the same rows.
+
+    `candidate_ids` are `video_id`s, not positions - the candidate pool is an
+    arbitrary, already-filtered subset of `real_frame` (post genre-guard), so
+    row order cannot be assumed to match. Restricted to `candidate_ids` after
+    reducing the *whole* `real_frame` rather than reducing just the pool,
+    which is exactly the incomparable-PCA-fit trap `_reduced_embeddings`
+    exists to avoid.
+    """
+    if reduced is None:
+        reduced = _reduced_embeddings(real_frame)
+    ids = list(real_frame["video_id"])
+    wanted = set(candidate_ids)
+    return {
+        vid: _cosine_distance(vec, centroid)
+        for vid, vec in zip(ids, reduced)
+        if vid in wanted
+    }
 
 
 def _select_with_backfill(
@@ -100,17 +214,29 @@ def _select_with_backfill(
 
     FLOOR is enforced by the caller (`plan()`) before this runs. LENGTH:
     target = `_target_length(native)`. GUARD: a backfill candidate must carry
-    the cluster's modal genre among its own tidied genre labels; the nearest-
-    embedding-centroid path this replaced is gone, not flagged off - see
-    briefs/backfill_constraint.md. No modal genre (native block entirely
-    unlabeled) or too few genre-matching candidates both resolve the same
-    way: fewer tracks, never a non-matching one.
+    the cluster's modal genre among its own tidied genre labels - this FILTERS
+    the candidate pool and never changes. RANK: within that filtered pool,
+    individual candidates are ranked by cosine distance (in the same
+    PCA-reduced embedding space HDBSCAN clustered in) to the *requesting*
+    cluster's own centroid, ascending - not by score, and not by nearest
+    *whole cluster* (`_clusters_by_distance`, briefs/backfill_rank.md's
+    predecessor, was too coarse: it made every cluster's backfill identical
+    to every other cluster's, since ranking a candidate's *own* cluster
+    rather than the candidate itself throws away all per-track information).
+    Ties: (distance asc, score desc, video_id asc). CEILING: a candidate at
+    or above `config.MAX_BACKFILL_DISTANCE` is dropped outright, even when it
+    is the only genre match - see that constant's comment for why 1.0 is a
+    geometric bound (cosine distance > 1.0 is negative similarity), not a
+    value tuned to any specific track. No modal genre (native block entirely
+    unlabeled), no genre-matching candidates, or no candidate under the
+    ceiling all resolve the same way: fewer tracks, never a track the guard
+    or the ceiling would otherwise have refused.
 
     Returns `(tracks, native_count, backfill_summary, modal_genre,
     target_length)`, where `backfill_summary` is one `(cluster_id,
     cluster_name, n_taken)` per outside cluster actually drawn from, grouped
-    in the order its tracks first appear in the score-ranked backfill block -
-    empty when the cluster had enough on its own.
+    in the order its tracks first appear in the distance-ranked backfill
+    block - empty when the cluster had enough on its own.
     """
     real = frame[frame["cluster"] >= 0]
     eligible = real[real["score"] >= config.MIN_SCORE]
@@ -123,13 +249,16 @@ def _select_with_backfill(
     target_length = _target_length(native_count)
     deficit = target_length - native_count
     if deficit <= 0:
-        return native.reset_index(drop=True), native_count, [], None, target_length
+        picked = native.reset_index(drop=True)
+        picked["distance"] = float("nan")
+        return picked, native_count, [], None, target_length
 
     modal_genre, _ = _modal_genre(native["genres"].map(tidy_genres))
 
     summary: list[tuple[int, str, int]] = []
     if modal_genre is None:
-        backfill = native.iloc[0:0]
+        backfill = native.iloc[0:0].copy()
+        backfill["distance"] = pd.Series(dtype="float64")
     else:
         outside = eligible[eligible["cluster"] != cluster].copy()
         outside["genres_tidy"] = outside["genres"].map(tidy_genres)
@@ -140,11 +269,33 @@ def _select_with_backfill(
         # silently returns a same-row, zero-COLUMN frame. Cast explicitly so
         # this stays a row mask no matter how many rows it started from.
         mask = outside["genres_tidy"].map(lambda gl: modal_genre in gl).astype(bool)
-        matching = _ranked(outside[mask])
-        backfill = matching.head(deficit)
+        matching = outside[mask]
+        if matching.empty:
+            backfill = matching.copy()
+            backfill["distance"] = pd.Series(dtype="float64")
+        else:
+            # One shared PCA fit for both the centroid and the individual
+            # candidate vectors - see _reduced_embeddings's docstring for why
+            # two separate calls here would silently land them in different,
+            # incomparable spaces.
+            reduced = _reduced_embeddings(real)
+            centroid = _cluster_centroids(real, reduced)[cluster]
+            distances = _distances_to_centroid(real, matching["video_id"], centroid, reduced)
+            matching = matching.copy()
+            matching["distance"] = matching["video_id"].map(distances)
+            # CEILING: dropped before ranking, not truncated after - a
+            # candidate at or above config.MAX_BACKFILL_DISTANCE is never a
+            # candidate at all, so it can't be admitted even as the sole
+            # genre match with nothing to rank against.
+            matching = matching[matching["distance"] < config.MAX_BACKFILL_DISTANCE]
+            backfill = matching.sort_values(
+                ["distance", "score", "video_id"], ascending=[True, False, True]
+            ).head(deficit)
         for other, take in backfill.groupby("cluster", sort=False):
             summary.append((int(other), str(take["cluster_name"].iloc[0]), len(take)))
 
+    native = native.copy()
+    native["distance"] = float("nan")
     picked = pd.concat([native, backfill]).reset_index(drop=True)
     return picked, native_count, summary, modal_genre, target_length
 
@@ -342,7 +493,14 @@ def render_plan(p: dict, ledger: QuotaLedger | None = None) -> str:
         if requested_cluster is not None and row.get("cluster") != requested_cluster:
             genre = p.get("modal_genre")
             via = row.get("cluster_name", row.get("cluster"))
-            tag = f"  [backfill: {genre} via {via}]" if genre else f"  [backfill: {via}]"
+            distance = row.get("distance")
+            dist_part = (
+                f", d={distance:.3f}" if distance is not None and not pd.isna(distance) else ""
+            )
+            tag = (
+                f"  [backfill: {genre} via {via}{dist_part}]" if genre
+                else f"  [backfill: {via}{dist_part}]"
+            )
         lines.append(
             f"  {i + 1:>3}. {title:<58} {score:.3f}{tag}" if score is not None
             else f"  {i + 1:>3}. {title}{tag}"

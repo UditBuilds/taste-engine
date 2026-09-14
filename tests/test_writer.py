@@ -5,6 +5,11 @@ behaviours that matter are the ones that stop a mistake being expensive:
 dry-run by default, resume after interruption, never a silent partial, and a
 write that verifies itself.
 """
+import os
+import subprocess
+import sys
+
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -631,6 +636,15 @@ class TestBackfill:
       nearest-embedding-centroid path this replaced (Build Brief 3, Part B)
       pulled musically unrelated tracks (T-Series padded with Travis Scott)
       and is gone, not flagged off.
+    * RANK    - briefs/backfill_rank.md: within the genre-matched pool,
+      individual candidates are ranked by distance to the requesting
+      cluster's own centroid, not by score (score ranking is what made
+      every cluster's backfill identical - see TestBackfillDistanceRanking
+      below for the regression coverage on that specifically).
+    * CEILING - briefs/backfill_rank.md: a candidate at or above
+      `config.MAX_BACKFILL_DISTANCE` is dropped outright, even as the only
+      genre match - a geometric bound (cosine distance > 1.0 is negative
+      similarity), not tuned to any specific track.
     """
 
     # Fixtures size off these, and TARGET is the real formula (not re-derived
@@ -639,6 +653,28 @@ class TestBackfill:
     FLOOR = writer.config.MIN_CLUSTER_NATIVE  # 12
     SHARE = writer.config.MAX_BACKFILL_SHARE  # 0.25
     TARGET = writer._target_length(FLOOR)  # 16
+
+    @pytest.fixture(autouse=True)
+    def mock_embeddings(self, monkeypatch):
+        """No test below touches the real embedding model. Vectors are
+        synthetic - [cluster, score] per row, built fresh from whatever
+        `real_frame` is actually handed in (never a hardcoded table), so a
+        fixture reorder can't silently mis-assign a vector to the wrong row.
+
+        This keeps distance-order agreeing with score-order *within* a
+        single neighbouring cluster (candidates there share the same first
+        coordinate, so only their score differs) - verified empirically, not
+        just argued, by the fact that test_guard_prefers_genre_match_over_a_
+        higher_score below still gets the same top-4 it always expected.
+        Cross-cluster differentiation is exactly what TestBackfillDistanceRanking
+        tests with its own explicit, per-test mocks instead of this default.
+        """
+        def fake_reduced(real_frame):
+            return np.array(
+                [[row.cluster, row.score] for row in real_frame.itertuples()],
+                dtype=float,
+            )
+        monkeypatch.setattr(writer, "_reduced_embeddings", fake_reduced)
 
     @pytest.fixture
     def guarded(self):
@@ -771,6 +807,41 @@ class TestBackfill:
         assert p["count"] == self.FLOOR
         assert p["shortfall"] == p["target_length"] - self.FLOOR > 0
 
+    def test_candidate_beyond_ceiling_never_admitted_even_as_only_match(
+        self, env, monkeypatch
+    ):
+        """config.MAX_BACKFILL_DISTANCE, briefs/backfill_rank.md: a candidate
+        at or above the ceiling is dropped even when it is the ONLY
+        genre-matching candidate anywhere in the eligible pool - the ceiling
+        is never relaxed to hit length, exactly like GUARD isn't when no
+        genre matches at all. Overrides the class's default embedding mock
+        locally, so the one candidate's cosine distance to cluster 1's
+        centroid is exactly 1.0 (orthogonal directions) - the boundary case
+        for "at or above", not just clearly beyond it.
+        """
+        conn, _, _ = env
+        rows = [
+            _track(f"c1nat{i:05d}", round(0.9 - i * 0.01, 2), 1, "Cluster One", ["pop"])
+            for i in range(self.FLOOR)
+        ]
+        rows.append(_track("c2onlymatch", 0.99, 2, "Cluster Two", ["pop"]))
+        frame = pd.DataFrame(rows)
+
+        direction = {1: np.array([1.0, 0.0]), 2: np.array([0.0, 1.0])}
+
+        def fake_reduced(real_frame):
+            return np.array([direction[row.cluster] for row in real_frame.itertuples()])
+
+        monkeypatch.setattr(writer, "_reduced_embeddings", fake_reduced)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: frame)
+
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert "c2onlymatch" not in set(p["tracks"]["video_id"])
+        assert p["backfilled_count"] == 0
+        assert p["backfill_by_cluster"] == []
+        assert p["count"] == self.FLOOR
+        assert p["shortfall"] > 0
+
     def test_unlabeled_native_block_returns_short_without_crashing(self, env, monkeypatch):
         """No modal genre is computable at all - the guard can never be
         satisfied, so it admits nothing rather than being skipped."""
@@ -789,6 +860,209 @@ class TestBackfill:
         assert p["modal_genre"] is None
         assert p["backfilled_count"] == 0
         assert p["count"] == self.FLOOR
+
+
+class TestBackfillDistanceRanking:
+    """briefs/backfill_rank.md: score ranked the genre-filtered pool, and
+    score order does not depend on which cluster is asking - so every
+    playlist needing backfill drew from the same handful of top-scored
+    tracks (measured: 10 distinct tracks filled 52 backfill slots across ten
+    playlists; Drake, Future and Lil Baby were byte-identical). Ranking
+    individual candidates by distance to the *requesting* cluster's own
+    centroid instead is the fix. `_clusters_by_distance` (nearest whole
+    cluster, the version that actually shipped and failed on 2026-09-13) is
+    deliberately not restored: ranking a candidate's cluster rather than the
+    candidate itself throws away exactly the per-track information this
+    needs.
+
+    Each test supplies its own explicit embedding mock rather than
+    TestBackfill's shared default, because the whole point here is
+    controlling which candidates end up nearest which requester.
+    """
+
+    FLOOR = writer.config.MIN_CLUSTER_NATIVE
+    TARGET = writer._target_length(FLOOR)
+    DEFICIT = TARGET - FLOOR
+
+    def _native(self, cluster):
+        return [
+            _track(f"c{cluster}nat{i:05d}", round(0.9 - i * 0.01, 2), cluster,
+                   f"Cluster {cluster}", ["pop"])
+            for i in range(self.FLOOR)
+        ]
+
+    def _assert_pairwise_distinct_and_not_collapsed(self, backfills: dict):
+        sets = list(backfills.values())
+        for i in range(len(sets)):
+            for j in range(i + 1, len(sets)):
+                assert sets[i] != sets[j], (
+                    f"clusters {list(backfills)[i]} and {list(backfills)[j]} "
+                    "got identical backfill sets"
+                )
+        distinct = set().union(*sets)
+        assert len(distinct) > max(len(s) for s in sets)
+        return distinct
+
+    def test_disjoint_pools_never_collide(self, env, monkeypatch):
+        """Three requesting clusters, three separate candidate clusters, one
+        globally highest-scored (10), one mid (20), one lowest (30) - a pure
+        score ranking sends every requester to cluster 10. Distance ranking
+        sends each to its own nearest pool instead.
+        """
+        conn, _, _ = env
+        rows = []
+        for req in (1, 2, 3):
+            rows += self._native(req)
+        pool_base = {10: 0.90, 20: 0.80, 30: 0.70}
+        for pool, base in pool_base.items():
+            rows += [
+                _track(f"c{pool}cand{i:05d}", round(base - i * 0.01, 2), pool,
+                       f"Pool {pool}", ["pop"])
+                for i in range(6)
+            ]
+        frame = pd.DataFrame(rows)
+
+        # cluster N's candidates sit at the exact same direction as
+        # requester N's centroid (N in {1,2,3} <-> pool in {10,20,30}), so
+        # distance to "home" is 0 and to anywhere else is >= 1.0
+        direction = {
+            1: np.array([1.0, 0.0]), 10: np.array([1.0, 0.0]),
+            2: np.array([0.0, 1.0]), 20: np.array([0.0, 1.0]),
+            3: np.array([-1.0, 0.0]), 30: np.array([-1.0, 0.0]),
+        }
+
+        def fake_reduced(real_frame):
+            return np.array([direction[row.cluster] for row in real_frame.itertuples()])
+
+        monkeypatch.setattr(writer, "_reduced_embeddings", fake_reduced)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: frame)
+
+        backfills = {}
+        for req in (1, 2, 3):
+            p = writer.plan(conn, cluster=req, mode="top")
+            assert p["backfilled_count"] == self.DEFICIT
+            native_ids = {r["video_id"] for r in self._native(req)}
+            backfills[req] = set(p["tracks"]["video_id"]) - native_ids
+
+        # own pool wins outright (distance 0 beats 1.0 and 2.0 for every
+        # requester) - top 4 of 6 by score, since all 6 tie on distance
+        assert backfills[1] == {f"c10cand{i:05d}" for i in range(4)}
+        assert backfills[2] == {f"c20cand{i:05d}" for i in range(4)}
+        assert backfills[3] == {f"c30cand{i:05d}" for i in range(4)}
+
+        distinct = self._assert_pairwise_distinct_and_not_collapsed(backfills)
+        assert len(distinct) == 12  # fully disjoint, not just "not identical"
+
+    def test_shared_pool_still_differentiates(self, env, monkeypatch):
+        """The shape the bug actually shipped in: several requesting
+        clusters drawing on the SAME neighbouring cluster, not separate
+        pools. Four requesters share one 24-track candidate cluster (id
+        100), arranged in four same-cluster subgroups of 6; each requester's
+        mocked centroid sits nearest a different subgroup, and the subgroup
+        scores are set so a pure score ranking would send every requester to
+        requester 1's subgroup - the exact collision the brief measured
+        (Drake, Future and Lil Baby drawing byte-identical backfill).
+        Subgroups are sized 6 (deficit is 4) so this also exercises ranking
+        *within* the nearest subgroup, not just "take all of it" - all 6
+        members of a subgroup tie on distance (identical mocked direction),
+        so which 4 of 6 get picked is decided by the score tie-break alone.
+        """
+        conn, _, _ = env
+        requesters = (1, 2, 3, 4)
+        rows = []
+        for req in requesters:
+            rows += self._native(req)
+
+        home_of = {}
+        base_score = {1: 0.95, 2: 0.90, 3: 0.85, 4: 0.80}
+        for req in requesters:
+            for i in range(6):
+                vid = f"c100r{req}t{i:05d}"
+                home_of[vid] = req
+                rows.append(_track(vid, round(base_score[req] - i * 0.01, 2), 100,
+                                    "Pool 100", ["pop"]))
+        frame = pd.DataFrame(rows)
+
+        direction = {
+            1: np.array([1.0, 0.0]), 2: np.array([0.0, 1.0]),
+            3: np.array([-1.0, 0.0]), 4: np.array([0.0, -1.0]),
+        }
+
+        def fake_reduced(real_frame):
+            out = []
+            for row in real_frame.itertuples():
+                home = row.cluster if row.cluster in direction else home_of[row.video_id]
+                out.append(direction[home])
+            return np.array(out)
+
+        monkeypatch.setattr(writer, "_reduced_embeddings", fake_reduced)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: frame)
+
+        backfills = {}
+        for req in requesters:
+            p = writer.plan(conn, cluster=req, mode="top")
+            assert p["backfilled_count"] == self.DEFICIT
+            # one shared candidate cluster id for every requester - the
+            # differentiation is entirely within-cluster, per-track
+            assert p["backfill_by_cluster"] == [(100, "Pool 100", self.DEFICIT)]
+            native_ids = {r["video_id"] for r in self._native(req)}
+            backfills[req] = set(p["tracks"]["video_id"]) - native_ids
+
+        for req in requesters:
+            assert backfills[req] == {f"c100r{req}t{i:05d}" for i in range(4)}
+
+        distinct = self._assert_pairwise_distinct_and_not_collapsed(backfills)
+        assert len(distinct) == 16  # fully disjoint, not just "not identical"
+
+
+class TestModalGenreTieBreak:
+    """_modal_genre's tie-break must not depend on Python's per-process
+    string hash seed. Found live on the real corpus 2026-09-14: Metro
+    Boomin's native block carries an exact 26-26 vote tie between "hip hop"
+    and "pop", and 10 separate process runs of the real pipeline split that
+    tie 5/5 before this fix. `Counter.most_common(1)`'s tie order comes from
+    dict-insertion order, which traces back to iterating `set(gl)` inside
+    _modal_genre - and set iteration order for strings is seed-dependent.
+    The old test suite passed the whole time this bug was live, because
+    every existing fixture's genre votes happen not to tie exactly - so
+    these tests build an explicit exact tie and check it two ways: same
+    answer across repeated in-process calls (necessary but not sufficient -
+    a single process's hash seed is fixed for its own lifetime either way),
+    and same answer across fresh subprocesses given different
+    PYTHONHASHSEED values (the actual discriminator - this is what a passing
+    old-code run would have failed, confirmed empirically before the fix
+    landed: 10 subprocess seeds gave 7x 'pop', 3x 'hip hop')."""
+
+    TIE_INPUT = [["hip hop", "pop"], ["pop", "hip hop"]]  # 2-2 exact tie
+
+    def test_repeated_calls_in_one_process_agree(self):
+        results = {writer._modal_genre(self.TIE_INPUT) for _ in range(20)}
+        assert len(results) == 1
+
+    def test_tie_break_is_alphabetical_on_the_count(self):
+        # highest count first (both tie at 2), then alphabetically-first
+        # label - "hip hop" < "pop".
+        genre, n_labeled = writer._modal_genre(self.TIE_INPUT)
+        assert (genre, n_labeled) == ("hip hop", 2)
+
+    def test_tie_break_is_stable_across_process_hash_seeds(self):
+        script = (
+            "from taste_engine.writer import _modal_genre\n"
+            f"genre, n = _modal_genre({self.TIE_INPUT!r})\n"
+            "print(genre)\n"
+        )
+        seeds = [str(s) for s in range(10)]
+        results = set()
+        for seed in seeds:
+            env = {**os.environ, "PYTHONHASHSEED": seed}
+            out = subprocess.run(
+                [sys.executable, "-c", script],
+                env=env, capture_output=True, text=True, check=True,
+            )
+            results.add(out.stdout.strip())
+        assert results == {"hip hop"}, (
+            f"tie-break varied across PYTHONHASHSEED values: {results}"
+        )
 
 
 class TestLengthFormula:
