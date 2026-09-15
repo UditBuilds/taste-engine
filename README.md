@@ -635,33 +635,72 @@ python -m taste_engine.cluster_eval
 
 | embedding text | ARI | NMI | purity | coverage | clusters | noise |
 |---|---:|---:|---:|---:|---:|---:|
-| **`"{title} - {artist}"`** | **0.627** | **0.627** | **0.668** | 53% | 45 | 44% |
-| `"{title}"`, artist stripped | 0.180 | 0.611 | 0.563 | 25% | 51 | **70%** |
-| `"{title}. {genres}"` | 0.397 | 0.458 | 0.437 | **67%** | 33 | 41% |
+| **`"{title} - {artist}"`** | **0.649** | **0.633** | **0.679** | 54% | 38 | 45% |
+| `"{title}"`, artist stripped | 0.383 | 0.452 | 0.467 | 42% | 19 | **57%** |
+| `"{title}. {genres}"` | 0.470 | 0.478 | 0.444 | **63%** | 32 | 44% |
+
+Measured at commit `cde906e` + this table's own fix (`artist_from_channel`'s
+NaN guard, below), on a dataset snapshot dated 2026-09-15: 40,619 plays,
+30,440 resolved videos, 11,475 playlist-track rows across 48 playlists,
+2,918 canonical music tracks. The table's `clusters`/`noise` columns come
+from `cluster_eval.compare_modes` on those 2,918 tracks — a different
+measurement from the "38 clusters" in the PCA-vs-raw table above (2,858
+tracks, predates canonical collapse, out of this re-measurement's scope
+and left unchanged). Only the `title_artist` row actually moved under the
+fix; `title` and `title_genre` were re-measured both before and after it
+and came back byte-identical each time, so all three rows hold under
+either commit. This is the third time this table has been
+measured, not the first: it was originally written at `f46dc24`, before
+canonical-upload collapse (`8e7dd42`) and the strict music filter
+(`5b0596d`) existed, so the first version described data neither of those
+had touched yet — it did not describe the current pipeline, and the gap was
+not caught until this re-measurement. Full re-measurement, the delta
+against both the original table and an interim unfixed re-run, and the
+invariance check confirming the rediscovery evaluation did not move:
+`reports/embedding_modes_remeasured.md`,
+`reports/eval_invariance_embed_remeasure.txt`.
 
 **The hypothesis was wrong.** Artist-keyed text agrees best with the user's own
-filing on every alignment metric — ARI 0.627 against 0.397 for genre and 0.180
-for bare titles.
+filing on every alignment metric — ARI 0.649 against 0.470 for genre and 0.383
+for bare titles. Re-measurement changed the specific numbers but not this
+conclusion: `title_artist` still wins on every metric, though its margin over
+`title_genre` narrowed by about a fifth once duplicate uploads stopped
+inflating the comparison (canonical collapse plausibly helps a genre-keyed
+embedding more than an artist-keyed one, since duplicate uploads of a song
+carry inconsistent genre tags but the same artist).
 
 Why each variant fails:
 
 - **Bare titles** carry almost no semantic signal. The corpus is `TBH`,
-  `20 Min`, `Ready`, `Snooze`. MiniLM cannot group those, so 70% land in noise
-  and coverage collapses to 25%. The artist string was not crowding out the
+  `20 Min`, `Ready`, `Snooze`. MiniLM cannot group those, so 57% land in noise
+  and coverage reaches only 42%. The artist string was not crowding out the
   signal; it *was* most of the signal.
 - **Genre labels are too coarse.** `topicCategories` returns 35 distinct tags
   across 3,570 tracks, and the common ones dominate — `hip hop`, `pop`,
   `electronic`, `rhythm and blues`. 95% of tracks carry at least one, so the
   coverage is real; the resolution is not. Genre gives the encoder something
   to hold onto, so
-  coverage is the best of the three at 67% and noise the lowest at 41%. But
-  the resulting 33 buckets are broad, and they cut across playlists the user
+  coverage is the best of the three at 63% and noise the lowest at 44%. But
+  the resulting 32 buckets are broad, and they cut across playlists the user
   drew much more finely.
 
 That is a genuine trade-off rather than a clean win, and worth stating as one:
 **genre clusters more tracks, artist clusters them more like the user would.**
 Alignment is the goal here, so `title_artist` stays the default; `mode=
 "title_genre"` is one argument away.
+
+A separate, smaller correction landed with this re-measurement:
+`embed.artist_from_channel` had no guard against a NaN channel (`float('nan')`
+is truthy in Python, so it fell through to the literal string `"nan"`,
+treated as a real artist name) — 9 of 2,918 canonical tracks were affected.
+Fixed to match the equivalent guard `canonical.canonical_key` already had on
+title. The fix changed `title_artist`'s embedding text for only 2 of those 9
+tracks (ARI moved by −0.003, not enough to matter); the other 7 also have a
+NaN *title*, which collapses to the same literal `"nan"` independent of the
+artist fix — a second, currently unfixed instance of the identical bug in
+`normalise_title` (see `reports/embedding_modes_remeasured.md`). `title` and
+`title_genre` modes were completely unaffected — they only use the channel
+to strip a prefix that never matched these tracks either way.
 
 Removing the artist properly also meant stripping the `"Artist - "` prefix from
 the *title*, not just dropping the channel — otherwise the artist survives in

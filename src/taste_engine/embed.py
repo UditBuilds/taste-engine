@@ -72,7 +72,11 @@ def artist_from_channel(channel: str | None) -> str:
     'PARTYNEXTDOOR - Topic' -> 'PARTYNEXTDOOR'
     'TravisScottVEVO'       -> 'Travis Scott'
     """
-    if not channel:
+    # NaN is truthy, so `if not channel` alone lets a float NaN through to
+    # str(channel) -> "nan", returned as if it were a real artist name.
+    # Same class of bug canonical.canonical_key already guards against on
+    # title (`title != title`) - matched here rather than a second idiom.
+    if not channel or channel != channel:
         return ""
     name = str(channel).strip()
     if name.endswith(" - Topic"):

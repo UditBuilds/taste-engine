@@ -1,0 +1,163 @@
+Claim: Part A (pure re-measurement, no code changed) left the evaluation
+completely untouched. Part B (the artist_from_channel NaN fix) moved exactly
+one strategy - cluster_diverse, the only one that reads clustering output at
+all - by a small amount, in both the replay and rediscovery forms. Every
+other strategy (score, most_played, recency) is byte-identical before and
+after. Not about backfill or the window pin - see
+reports/eval_invariance_backfill.txt and reports/eval_invariance_window.txt
+for those; not about the Last.fm work - see reports/eval_invariance_lastfm.txt.
+
+taste-engine embedding-mode re-measurement - reports/embedding_modes_remeasured.md
+before commit: cde906eec8b1d31ef396fa7621d520047b32ee3a (Part A ran here,
+  unmodified - no code changed between "before" and this commit)
+after: working tree with embed.py's artist_from_channel NaN guard applied
+  (Part B), not yet committed at capture time
+run (UTC): 2026-09-15, before and after
+
+Two commands, matching this brief's SECTION 5 literally where possible -
+same discrepancy as the Last.fm brief's invariance check and resolved the
+same way: `--test-end` (SECTION 5's literal pinned command) and
+`--rediscovery`/`--both` are mutually exclusive in evaluate.py's argparse
+(f88a160), so the literal command alone cannot check "the rediscovery
+evaluation must not move" as the brief's prose asks. Command A is the
+literal pinned command (replay). Command B (`--both --test-days 30`, the
+same window) is added to actually exercise rediscovery, matching the
+precedent in reports/eval_invariance_lastfm.txt and CLAUDE.md's own State
+section for this exact check.
+
+  A. bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 \
+       --test-end 2026-07-01 -k 50 --half-life 14
+
+  B. bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 \
+       --test-days 30 -k 50 --half-life 14 --both
+
+Determinism checked both before Part B (two separate "before" processes)
+and after (two separate "after" processes), not just before-vs-after - the
+same discipline as the prior two invariance reports, given this path runs
+HDBSCAN (cluster_diverse) and this repo has a recorded case of hash-seed
+nondeterminism elsewhere (writer._modal_genre).
+
+RESULTS
+
+Command A, before-pair: byte-identical (empty diff).
+Command A, after-pair: byte-identical (empty diff).
+Command B, before-pair: byte-identical (empty diff).
+Command B, after-pair: NOT byte-identical as raw text - four
+  "Loading weights: ..." progress-bar lines from sentence-transformers'
+  model loading appear in one run and not the other (a tqdm/stderr
+  artifact of cold- vs warm-cache model loading between separate process
+  invocations, present nowhere else in either file). With those four lines
+  filtered out, the after-pair is byte-identical. Reported rather than
+  waved away: this is stdout/stderr interleaving noise from a third-party
+  library, not a computed value, and it does not appear in command A's
+  after-pair at all (same code, same machine, same two-run structure) -
+  consistent with a cache-warmth artifact rather than anything in this
+  repo's own code.
+
+Command A, before vs after: **1 strategy moved, every other line
+byte-identical.**
+
+       strategy  hits  precision@50  ndcg@50  spearman
+cluster_diverse    27          0.54   0.3213 -> 0.3080       NaN
+
+score / most_played / recency: unchanged (hits, precision@50, ndcg@50,
+spearman all identical). "Best on nDCG@50: score at 0.551 vs 0.542
+baseline (+1.6%)" - unchanged, since neither score nor most_played moved.
+
+Command B, before vs after (content-only diff, progress-bar lines
+excluded): **the same 1 strategy moved, in both the rediscovery task and
+the trailing replay section (which shares command A's window and
+reproduces the identical movement above), everything else byte-identical.**
+
+  Rediscovery across splits:
+    cluster_diverse  mean_ndcg@20  0.2587 -> 0.2567   (mean_recall@20,
+      beats_baseline, splits: unchanged)
+    score / most_played / recency: unchanged.
+
+  Single displayed rediscovery split (k=20): cluster_diverse's own row on
+  *this* split did not move (0.1688 both times) - the across-splits mean
+  moved because of at least one of the other, non-displayed splits, not
+  this one. "Best on ndcg@20: recency at 0.330 vs 0.135 baseline
+  (+143.6%)" - unchanged, since recency did not move.
+
+Why only cluster_diverse: it is the one strategy in evaluate.py/recommend.py
+that reads embedding-based clustering output at all (`cluster_tracks`,
+needed to diversify picks across clusters). score, most_played, and recency
+are pure play-count/recency computations with no path to the embedding text
+that Part B changed for 2 of 2,918 tracks - they could not have moved, and
+the measurement confirms they did not, to the byte.
+
+Magnitude, for scale against the underlying clustering delta
+(reports/embedding_modes_remeasured.md: title_artist ARI moved -0.0031,
+~0.5% relative): cluster_diverse's replay ndcg@50 moved ~-4.1% relative
+(0.3213->0.3080); its rediscovery mean_ndcg@20 moved ~-0.8% relative
+(0.2587->0.2567). Neither headline conclusion in README §2 (replay: score
+beats most_played by +1.6%; rediscovery: recency beats most_played by
++143.6%) depends on cluster_diverse, and neither moved.
+
+Full "after" output for both commands is verbatim and unedited below.
+
+========================================================================
+COMMAND A (replay, --test-end) - AFTER
+========================================================================
+
+Temporal hold-out  train < 2026-06-01 <= test (to 2026-07-01)
+  half-life               14 days
+  train tracks         2,066 (5,465 plays)
+  test tracks            867 (1,613 plays)
+  seen in train          390 (cold start: 477)
+  ceiling@50          100.0%
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+        recency    22          0.44   0.3088    0.2620
+cluster_diverse    27          0.54   0.3080       NaN
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).
+
+========================================================================
+COMMAND B (--both --test-days 30: rediscovery, then replay) - AFTER
+========================================================================
+
+Rediscovery  train < 2026-06-01 <= test, top-50 favourites removed
+  candidates           2,016 (excluded 50)
+  truth                  835 (reachable: 358)
+  ceiling@20            5.6%  (k=20 picks from 358 reachable)
+
+       strategy  hits  recall@20  precision@20  ndcg@20
+        recency    12     0.0335           0.6   0.3299
+          score    14     0.0391           0.7   0.2227
+cluster_diverse    12     0.0335           0.6   0.1688
+    most_played    10     0.0279           0.5   0.1354
+
+  Best on ndcg@20: recency at 0.330 vs 0.135 baseline (+143.6%).
+
+
+Rediscovery across splits
+       strategy  mean_ndcg@20  mean_recall@20  beats_baseline  splits
+          score        0.3776          0.0576               4       4
+cluster_diverse        0.2567          0.0534               3       4
+    most_played        0.2500          0.0441               0       4
+        recency        0.2304          0.0432               2       4
+
+========================================================================
+
+Temporal hold-out  train < 2026-06-01 <= test (30d)
+  half-life               14 days
+  train tracks         2,066 (5,465 plays)
+  test tracks            867 (1,613 plays)
+  seen in train          390 (cold start: 477)
+  ceiling@50          100.0%
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+        recency    22          0.44   0.3088    0.2620
+cluster_diverse    27          0.54   0.3080       NaN
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).
+
+Note: these are not the README's headline nested-tuning figures (+139.7%,
+3/3 splits, p=0.125) - that is a different, heavier sweep
+(scripts/nested_eval.py), untouched by this brief and not re-run here.

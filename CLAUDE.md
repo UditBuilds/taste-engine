@@ -203,21 +203,37 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
 2. **`Talwiinder - KAMMO JI`** needs a leading-artist strip, which is riskier
    than it looks (must not eat titles legitimately containing a dash).
 3. **Clusters are artist-shaped, not mood-shaped.** Genre embeddings were
-   tested and rejected (ARI 0.397 vs 0.627); `topicCategories` is too coarse at
-   35 tags. Audio features would be the real fix and YouTube does not expose
-   them. New evidence (2026-09-13): this is also why nearest-cluster backfill
-   (item 5) is musically coherent for an artist-genre-shaped cluster (Travis
-   Scott → Kendrick, Drake, Post Malone) and incoherent for an
-   industry/language-shaped one (T-Series → Joji, Playboi Carti, Doja Cat).
-   "Nearest cluster" is only as meaningful as the clustering it's measured in.
+   tested and rejected (ARI 0.470 vs 0.649, re-measured 2026-09-15 — see item
+   6); `topicCategories` is too coarse at 35 tags. Audio features would be the
+   real fix and YouTube does not expose them. New evidence (2026-09-13): this
+   is also why nearest-cluster backfill (item 5) is musically coherent for an
+   artist-genre-shaped cluster (Travis Scott → Kendrick, Drake, Post Malone)
+   and incoherent for an industry/language-shaped one (T-Series → Joji,
+   Playboi Carti, Doja Cat). "Nearest cluster" is only as meaningful as the
+   clustering it's measured in.
 4. **§1.4's split table** predates the strict filter; caveated in place rather
-   than re-run.
+   than re-run. Still true as of item 6's fix — that brief re-measured the
+   *other* stale table (item 6), not this one.
 5. **Rediscover mode pool depth — addressed, not solved.** A shallow cluster
    used to degrade into fan re-uploads once native material ran out; backfill
    (2026-09-13, README §8 "Backfill") fixes the *floor* — nothing below
    `MIN_SCORE` ships — but not the *coherence* (item 3). A cluster whose
    nearest neighbours are genuinely unrelated gets an oddly-mixed playlist
    instead of a low-quality one, not a fixed one.
+6. **A second table shared item 4's cause, and has now been fixed.** README's
+   embedding-mode ARI table (`title_artist`/`title_genre`/`title`) was
+   measured at `f46dc24`, before the exact same two changes item 4's split
+   table predates: canonical-upload collapse (`8e7dd42`) and the strict music
+   filter (`5b0596d`). Found and re-measured 2026-09-15 while investigating a
+   fresh `title_artist`-only probe that didn't match the README (0.652 vs the
+   table's 0.627) — full three-mode re-measurement, an
+   `embed.artist_from_channel` NaN-guard fix (9/2,918 tracks, `title_artist`
+   ARI moved −0.003; `title`/`title_genre` unaffected), and the delta:
+   `reports/embedding_modes_remeasured.md`. Current: `title_artist` 0.649 vs
+   `title_genre` 0.470 vs `title` 0.383 — same winner, margin narrowed ~21%.
+   **README's table is now current; item 4's split table is not** — this
+   fixed one stale table, not the pattern. A general guard against a third
+   instance is out of scope for the brief that did this and gets its own.
 
 ## Repo shape
 
