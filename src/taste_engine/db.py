@@ -121,6 +121,49 @@ CREATE TABLE IF NOT EXISTS written_tracks (
     PRIMARY KEY (playlist_row, video_id)
 );
 CREATE INDEX IF NOT EXISTS ix_wt_row ON written_tracks(playlist_row);
+
+-- Phase 5: Last.fm tag coverage measurement (briefs/lastfm_coverage) -------
+-- Read-only w.r.t. every other table. `canonical_id` is the representative
+-- `video_id` that `canonical.collapse()` picks for a song (the same id
+-- `video_metadata`/`written_tracks` already use) - see reports/
+-- lastfm_coverage.md for why, and the caveat that a re-collapse can shift
+-- which upload is representative.
+
+CREATE TABLE IF NOT EXISTS track_tags (
+    canonical_id   TEXT NOT NULL,
+    tag            TEXT NOT NULL,
+    weight         INTEGER NOT NULL,
+    source         TEXT NOT NULL,  -- 'track' | 'artist'
+    fetched_at     TEXT NOT NULL,
+    PRIMARY KEY (canonical_id, tag, source)
+);
+CREATE INDEX IF NOT EXISTS ix_tt_canonical ON track_tags(canonical_id);
+CREATE INDEX IF NOT EXISTS ix_tt_tag ON track_tags(tag);
+
+-- One row per (canonical track, source, query variant) attempt, so a track
+-- fetched-and-empty is distinguishable from a track never fetched, and a
+-- re-run skips whatever this already has a row for. `query_variant` keeps
+-- the with-/without-feat. passes (SECTION 4 of the brief) separately
+-- recoverable instead of one overwriting the other. The artist-level
+-- fallback is deduped by artist at fetch time (lastfm.py), not by this
+-- table's shape - see its docstring.
+CREATE TABLE IF NOT EXISTS track_tag_lookups (
+    canonical_id   TEXT NOT NULL,
+    source         TEXT NOT NULL,  -- 'track' | 'artist'
+    query_variant  TEXT NOT NULL,  -- 'feat_kept' | 'feat_stripped'
+    status         TEXT NOT NULL,  -- 'ok_tags' | 'ok_zero_tags' | 'not_found' |
+                                    -- 'error' | 'unresolved' (no artist could
+                                    -- be parsed locally; no call was made)
+    query_artist   TEXT NOT NULL,
+    query_track    TEXT,           -- NULL when source = 'artist'
+    error_detail   TEXT,           -- Last.fm error code/message, or the
+                                    -- local exception, when status='error'
+    fetched_at     TEXT NOT NULL,
+    PRIMARY KEY (canonical_id, source, query_variant)
+);
+CREATE INDEX IF NOT EXISTS ix_ttl_status ON track_tag_lookups(status);
+CREATE INDEX IF NOT EXISTS ix_ttl_artist
+    ON track_tag_lookups(source, query_variant, query_artist);
 """
 
 # Phase 4 tables were reshaped after Phase 3 shipped. They are write-back

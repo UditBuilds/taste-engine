@@ -1,0 +1,129 @@
+Claim supported: the Last.fm tag coverage brief (reports/lastfm_coverage.md)
+did not move the evaluation figures. Two commands checked, both byte-identical
+before and after the brief's schema migration, module, script, and full live
+fetch (3,784 lookup attempts against track_tag_lookups/track_tags). Not about
+backfill or the window pin - see reports/eval_invariance_backfill.txt and
+reports/eval_invariance_window.txt for those claims.
+
+taste-engine Last.fm coverage measurement - reports/lastfm_coverage.md
+commit: dafaf01d6cf529885807503e71c41d768266a3e1 + this brief's uncommitted
+        working-tree changes (db.py migration, src/taste_engine/lastfm.py,
+        scripts/lastfm_coverage.py, tests/test_lastfm.py, .env.example) -
+        this session's brief prohibits git commit/push, so it is not yet
+        landed at a SHA
+run (UTC): 2026-09-15 ~10:30 (before, twice) and ~11:00 (after)
+
+Purpose: the brief's own SECTION 6. Nothing in scripts/lastfm_coverage.py or
+src/taste_engine/lastfm.py touches classify.py, canonical.py, embed.py,
+score.py, or evaluate.py - it only reads scored_tracks()/library_songs and
+writes to the two new tables (track_tags, track_tag_lookups). This checks
+that claim empirically rather than by code-reading alone: if the read path
+the evaluation depends on were touched by anything in this brief, one of the
+commands below would move.
+
+Two commands, matching this brief's SECTION 6 literally where possible:
+
+  A. bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 \
+       --test-end 2026-07-01 -k 50 --half-life 14
+
+  B. bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 \
+       --test-days 30 -k 50 --half-life 14 --both
+
+Command A is the brief's pinned command verbatim. It is the REPLAY report,
+not rediscovery: --test-end and --rediscovery/--both are mutually exclusive
+in evaluate.py's argparse (added in f88a160, "Pin the replay evaluation
+window with --test-end") - passing both is a parser.error, not a silent
+fallback. The brief's SECTION 6 says "the rediscovery figures must be
+byte-identical," which command A alone cannot check. Command B is added to
+actually cover that: --both --test-days 30 is the exact invariance-check
+form CLAUDE.md's own State section already used for the backfill toggle
+check ("re-ran --both --test-days 30, restored, ran again - byte-identical
+output both times"), reused here rather than invented, and it exercises both
+replay and rediscovery in one run. This discrepancy between the brief's
+literal command and its stated intent is reported rather than silently
+resolved one way.
+
+Confirmed byte-identical for both commands:
+  - Command A: run twice before any code in this brief existed (two separate
+    processes, diffed - empty diff, md5 332675cec48d5c30ab72054859e3e9da both
+    times), then run a third time after db.py's migration, lastfm.py,
+    scripts/lastfm_coverage.py, and the full live fetch had all landed and
+    populated track_tags/track_tag_lookups - diffed against either "before"
+    run: empty diff.
+  - Command B: same pattern - twice before (empty diff, md5
+    3f7d1e7fbf4f646dc3e803ebee8b39a0 both times), once after - empty diff.
+  - Running the "before" pair twice each, rather than once, was deliberate:
+    this path runs HDBSCAN clustering (cluster_diverse strategy), and this
+    repo has a recorded case of hash-seed-dependent nondeterminism elsewhere
+    (writer._modal_genre's tie-break). Confirming the baseline was already
+    stable across two independent processes is what makes "unchanged after"
+    mean something, rather than possibly just being consistent with a metric
+    that was never stable to begin with.
+
+Full "after" output below is verbatim and unedited.
+
+========================================================================
+COMMAND A (replay, --test-end)
+========================================================================
+
+Temporal hold-out  train < 2026-06-01 <= test (to 2026-07-01)
+  half-life               14 days
+  train tracks         2,066 (5,465 plays)
+  test tracks            867 (1,613 plays)
+  seen in train          390 (cold start: 477)
+  ceiling@50          100.0%
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+cluster_diverse    27          0.54   0.3213       NaN
+        recency    22          0.44   0.3088    0.2620
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).
+
+========================================================================
+COMMAND B (--both --test-days 30: rediscovery, then replay)
+========================================================================
+
+Rediscovery  train < 2026-06-01 <= test, top-50 favourites removed
+  candidates           2,016 (excluded 50)
+  truth                  835 (reachable: 358)
+  ceiling@20            5.6%  (k=20 picks from 358 reachable)
+
+       strategy  hits  recall@20  precision@20  ndcg@20
+        recency    12     0.0335           0.6   0.3299
+          score    14     0.0391           0.7   0.2227
+cluster_diverse    12     0.0335           0.6   0.1688
+    most_played    10     0.0279           0.5   0.1354
+
+  Best on ndcg@20: recency at 0.330 vs 0.135 baseline (+143.6%).
+
+
+Rediscovery across splits
+       strategy  mean_ndcg@20  mean_recall@20  beats_baseline  splits
+          score        0.3776          0.0576               4       4
+cluster_diverse        0.2587          0.0534               3       4
+    most_played        0.2500          0.0441               0       4
+        recency        0.2304          0.0432               2       4
+
+========================================================================
+
+Temporal hold-out  train < 2026-06-01 <= test (30d)
+  half-life               14 days
+  train tracks         2,066 (5,465 plays)
+  test tracks            867 (1,613 plays)
+  seen in train          390 (cold start: 477)
+  ceiling@50          100.0%
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+cluster_diverse    27          0.54   0.3213       NaN
+        recency    22          0.44   0.3088    0.2620
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).
+
+Note: these are NOT the README's headline nested-tuning figures (+139.7%,
+3/3 splits, p=0.125) - that is a different, heavier sweep
+(scripts/nested_eval.py). This is the lighter pinned single-config check
+SECTION 6 asks for, at k=20 rather than the headline's k. Both untouched.
