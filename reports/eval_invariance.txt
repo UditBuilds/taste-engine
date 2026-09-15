@@ -1,0 +1,51 @@
+taste-engine invariance re-check — briefs/limit_and_invariance.md, Part 2
+commit: 58799f7a498fcc29363270bdafa460981417a782
+run (UTC): 2026-09-14 16:34:09
+command: bash scripts/run.sh -m taste_engine.evaluate --both --test-days 30
+
+Purpose: re-run the nDCG invariance check against the CURRENT backfill
+mechanism (floor + computed length + genre guard + distance ranking +
+ceiling). The only prior invariance evidence on record verified the
+now-deleted nearest-centroid mechanism (commit 55615fc); no committed
+artifact proved this check had been re-run since. This file is that
+artifact. Full output below is verbatim and unedited.
+
+========================================================================
+
+Rediscovery  train < 2026-06-01 <= test, top-50 favourites removed
+  candidates           2,016 (excluded 50)
+  truth                  835 (reachable: 358)
+  ceiling@20            5.6%  (k=20 picks from 358 reachable)
+
+       strategy  hits  recall@20  precision@20  ndcg@20
+        recency    12     0.0335           0.6   0.3299
+          score    14     0.0391           0.7   0.2227
+cluster_diverse    12     0.0335           0.6   0.1688
+    most_played    10     0.0279           0.5   0.1354
+
+  Best on ndcg@20: recency at 0.330 vs 0.135 baseline (+143.6%).
+
+
+Rediscovery across splits
+       strategy  mean_ndcg@20  mean_recall@20  beats_baseline  splits
+          score        0.3776          0.0576               4       4
+cluster_diverse        0.2587          0.0534               3       4
+    most_played        0.2500          0.0441               0       4
+        recency        0.2304          0.0432               2       4
+
+========================================================================
+
+Temporal hold-out  train < 2026-06-01 <= test (30d)
+  half-life               14 days
+  train tracks         2,066 (5,465 plays)
+  test tracks            867
+  seen in train          390 (cold start: 477)
+  ceiling@50          100.0%
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+cluster_diverse    27          0.54   0.3213       NaN
+        recency    22          0.44   0.3088    0.2620
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).

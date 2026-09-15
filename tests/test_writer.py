@@ -315,7 +315,7 @@ class TestBookkeeping:
         )
         # mode="top" isolates the cluster filter from the favourites filter.
         with pytest.raises(writer.WriteBlocked, match="no tracks"):
-            writer.plan(conn, cluster=99, limit=5, mode="top")
+            writer.plan(conn, cluster=99, mode="top")
 
     def test_a_present_cluster_is_selected(self, env, monkeypatch):
         conn, _, _ = env
@@ -436,8 +436,7 @@ class TestModes:
     def test_unknown_mode_is_refused(self, env):
         conn, _, _ = env
         with pytest.raises(writer.WriteBlocked, match="unknown mode"):
-            writer.plan(conn, cluster=1, limit=3, mode="vibes",
-                        tracks=make_tracks(3))
+            writer.plan(conn, cluster=1, mode="vibes", tracks=make_tracks(3))
 
     def test_a_small_cluster_cannot_do_rediscover(self, env, monkeypatch):
         """A real constraint, not a corner case.
@@ -457,7 +456,7 @@ class TestModes:
         })
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: small)
         with pytest.raises(writer.WriteBlocked, match="after excluding favourites"):
-            writer.plan(conn, cluster=7, limit=3)   # default exclude_top=50
+            writer.plan(conn, cluster=7)   # default exclude_top=50
 
     def test_a_cluster_emptied_by_exclusion_says_so(self, env, monkeypatch,
                                                     catalogue):
@@ -1072,3 +1071,41 @@ class TestLengthFormula:
     @pytest.mark.parametrize("native, expected_target", [(12, 16), (22, 29), (29, 38)])
     def test_target_length_formula(self, native, expected_target):
         assert writer._target_length(native) == expected_target
+
+
+class TestLimit:
+    """--limit only means something when there is no cluster to compute a
+    length from (config.MIN_CLUSTER_NATIVE / config.MAX_BACKFILL_SHARE).
+    Passing both is refused before any DB or recommend.build work happens -
+    both spellings of a cluster-scoped request hit the identical
+    top-of-function check, so neither refusal test below needs a
+    monkeypatch or injected tracks."""
+
+    def test_limit_with_cluster_is_refused(self, env):
+        conn, _, _ = env
+        with pytest.raises(writer.WriteBlocked, match="does not apply"):
+            writer.plan(conn, cluster=3, limit=50)
+        assert writer.list_written(conn).empty
+
+    def test_limit_with_cluster_name_is_refused(self, env):
+        conn, _, _ = env
+        with pytest.raises(writer.WriteBlocked, match="does not apply"):
+            writer.plan(conn, cluster_name="Test Artist", limit=50)
+        assert writer.list_written(conn).empty
+
+    def test_limit_still_bounds_a_non_cluster_write(self, env, monkeypatch):
+        conn, _, _ = env
+        monkeypatch.setattr(
+            "taste_engine.recommend.build", lambda *a, **k: make_tracks(5)
+        )
+        p = writer.plan(conn, limit=3, mode="top")
+        assert p["count"] == 3
+        assert len(p["tracks"]) == 3
+
+    def test_a_non_cluster_write_still_defaults_to_50(self, env, monkeypatch):
+        conn, _, _ = env
+        monkeypatch.setattr(
+            "taste_engine.recommend.build", lambda *a, **k: make_tracks(60)
+        )
+        p = writer.plan(conn, mode="top")
+        assert p["count"] == 50

@@ -170,7 +170,12 @@ def main(argv: list[str] | None = None) -> int:
              "Scott'. Preferred over --cluster: ids are reassigned whenever the "
              "song set changes.",
     )
-    w.add_argument("--limit", type=int, default=50, help="tracks (default 50)")
+    w.add_argument(
+        "--limit", type=int, default=None,
+        help="tracks for a non-cluster write (default 50). Not valid "
+             "together with --cluster/--cluster-name: a cluster's playlist "
+             "length is computed from cluster depth, not requested.",
+    )
     w.add_argument("--half-life", type=float, help="override the recency half-life")
     w.add_argument(
         "--mode", choices=list(writer.MODES), default=writer.MODE_REDISCOVER,

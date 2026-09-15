@@ -303,7 +303,7 @@ def _select_with_backfill(
 def plan(
     conn: sqlite3.Connection,
     cluster: int | None = None,
-    limit: int = 50,
+    limit: int | None = None,
     half_life: float | None = None,
     tracks: pd.DataFrame | None = None,
     mode: str = MODE_REDISCOVER,
@@ -326,6 +326,13 @@ def plan(
     """
     if mode not in MODES:
         raise WriteBlocked(f"unknown mode {mode!r}; choose from {list(MODES)}")
+    if limit is not None and (cluster is not None or cluster_name):
+        raise WriteBlocked(
+            "--limit does not apply to a cluster-scoped write: playlist "
+            "length is computed from cluster depth (config.MIN_CLUSTER_NATIVE "
+            "/ config.MAX_BACKFILL_SHARE), not requested. Drop --limit, or "
+            "drop --cluster/--cluster-name for a plain top-N playlist."
+        )
 
     excluded_count = 0
     requested_cluster_name = None
@@ -384,8 +391,9 @@ def plan(
                 _select_with_backfill(frame, cluster)
             )
         else:
+            effective_limit = 50 if limit is None else limit
             frame = frame.sort_values(["score", "video_id"], ascending=[False, True])
-            tracks = frame.head(limit).reset_index(drop=True)
+            tracks = frame.head(effective_limit).reset_index(drop=True)
 
     name = "playlist"
     if cluster is not None:
@@ -444,8 +452,7 @@ def render_plan(p: dict, ledger: QuotaLedger | None = None) -> str:
     if p.get("target_length") is not None:
         lines.append(
             f"  length     {p['target_length']} = floor({p['native_count']} native / "
-            f"(1 - {config.MAX_BACKFILL_SHARE}))   "
-            "(--limit ignored: length is computed, not requested)"
+            f"(1 - {config.MAX_BACKFILL_SHARE}))"
         )
         lines.append(
             f"  modal genre {p['modal_genre']!r}" if p["modal_genre"]
