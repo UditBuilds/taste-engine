@@ -33,7 +33,9 @@ rediscover` and confirmed against the live API (§8).*
 3. `bash scripts/setup_env.sh && bash scripts/install_pkg.sh` — venv + editable install.
 4. `python -m taste_engine.parse_takeout` — Takeout → SQLite, ~15s, offline.
 5. `python -m taste_engine.resolve && python -m taste_engine.classify` — resolve video metadata, then classify music vs. not.
-6. `taste-engine write --cluster-name "..." --limit 45` — dry run; nothing is written without `--commit`.
+6. `taste-engine write --cluster-name "..."` — dry run; nothing is written
+   without `--commit`. Playlist length is computed from cluster depth, not
+   requested — `--limit` applies only to a non-cluster write.
 
 Every command, every flag, and what each one costs: §10.
 
@@ -706,7 +708,7 @@ config file would be a lie the code tells itself.
 
 ## 8. Write-back
 
-> **Status: run live.** The test suite (`tests/test_writer.py`, 53 tests,
+> **Status: run live.** The test suite (`tests/test_writer.py`, 76 tests,
 > `tests/fake_youtube.py` standing in for the API) covers every behaviour
 > below. The first live `--commit` (2026-09-13) found a defect no mock had
 > modelled — see below — and after the fix, a full write has completed
@@ -782,8 +784,8 @@ side. The playlist wrote in full (45 of 45) and verified clean against
 
 ```bash
 taste-engine clusters                                    # see what exists
-taste-engine write --cluster-name "Travis Scott" --limit 50     # dry run
-taste-engine write --cluster-name "Travis Scott" --limit 50 --commit
+taste-engine write --cluster-name "Travis Scott"                # dry run
+taste-engine write --cluster-name "Travis Scott" --commit
 taste-engine write --resume 2 --commit                   # continue a partial
 taste-engine write --rollback 2 --commit                 # delete it (50 units)
 taste-engine written                                     # what exists
@@ -821,55 +823,72 @@ fan-channel extended cuts that the conservative artist rule declines to merge.
 
 ### Backfill
 
-The pool-depth problem above is really a floor problem: how much of a cluster
-the model itself believes in. `config.MIN_SCORE` (0.5) makes that explicit -
-candidates below it are not eligible, deep cluster or not. A cluster that
-clears the floor on its own is unaffected; the output for a deep cluster is
-identical to before this existed. A cluster that does not backfills from its
-nearest neighbours by embedding centroid - cosine distance in the same
-PCA-reduced space HDBSCAN actually clustered in, nearest cluster first, ranked
-by score within each. If every cluster's eligible material runs out before the
-playlist fills, the playlist comes back short. It is never padded below the
-floor.
+A `--cluster`/`--cluster-name` write applies five rules, in this order, every
+time:
 
-Measured before writing anything (`scripts/backfill_report.py`, no API calls),
-at limit 45:
+1. **FLOOR** — a cluster with fewer than `config.MIN_CLUSTER_NATIVE` (12)
+   eligible native tracks (`score >= config.MIN_SCORE`) generates no playlist
+   at all; `writer.plan()` raises `WriteBlocked` before selecting anything.
+   27 of the library's 37 real clusters currently fall below it
+   (`reports/backfill_plan.md`, "Skipped: below the floor").
+2. **LENGTH** — for a cluster that clears the floor, the target length is
+   `floor(native / (1 - config.MAX_BACKFILL_SHARE))`, `MAX_BACKFILL_SHARE =
+   0.25`. The target is derived from the native count, not requested —
+   `--limit` does not apply to a cluster-scoped write.
+3. **GUARD** — a backfill candidate must carry the cluster's modal genre: a
+   plurality vote over its native members' tidied genre labels
+   (`embed.tidy_genres`), an exact tie broken deterministically (highest
+   count, then alphabetically-first label). A candidate that does not match
+   is never eligible, however close it sits; too few genre-matching
+   candidates means the playlist comes back short.
+4. **RANK** — within that genre-guarded pool, individual candidates are
+   ordered by cosine distance to the *requesting* cluster's own centroid (the
+   PCA-reduced embedding space HDBSCAN clustered in), ascending — not by
+   score, and not by nearest whole neighbouring cluster. Ties: distance
+   ascending, then score descending, then video ID ascending.
+5. **CEILING** — a candidate at or beyond `config.MAX_BACKFILL_DISTANCE`
+   (1.0) is refused outright, even if it is the only genre match available.
+   Cosine distance runs 0–2; past 1.0 is negative similarity, not merely
+   "far" — a geometric bound fixed before measuring which tracks it would
+   exclude.
 
-| cluster | tracks | native (>= 0.5) | backfilled | final | source clusters |
-|---|---:|---:|---:|---:|---|
-| T-Series / Pritam / Sony Music India | 492 | 22 | 23 | 45 | Joji (13), Playboi Carti (8), Doja Cat (2) |
-| Travis Scott | 84 | 21 | 24 | 45 | Kendrick Lamar (5), Drake (6), Post Malone (5), Justin Bieber (3), Young Thug (2), Radiohead/NBSPLV/softsync (2), Kanye West (1) |
+GUARD or CEILING running out of eligible material returns the playlist
+**short** rather than relaxing the rule that stopped it. FLOOR is stricter
+still: below it, no playlist is generated at all.
 
-Both filled to the requested 45 - the global pool (276 eligible tracks across
-32 clusters, after the rediscovery favourites exclusion) had headroom for
-these two. That will not hold for every cluster; a thinner neighbourhood
-returns fewer tracks rather than padding, per the measurement above.
+**Worked example — T-Series / Pritam / Sony Music India**
+(`reports/backfill_plan.md`, "Per-cluster dry-run plan" and "Distance
+ranking"; reproduce with `scripts/backfill_plan.py`):
 
-**Whether the result is musically sensible depends entirely on the cluster,
-and for T-Series it plainly is not.** Travis Scott's backfill is almost all
-hip-hop - Kendrick, Drake, Post Malone, Young Thug, Kanye - genuinely adjacent
-listening, with one clear miss (Radiohead). More than half the T-Series
-playlist is backfill from Joji, Playboi Carti and Doja Cat: alt-R&B and rap
-acts with no evident relationship to Hindi film music beyond sharing this
-listener's library. That is not a bug to tune away - `MIN_SCORE` was not
-adjusted to produce either result, and adjusting it to hide the T-Series
-mismatch would trade an honest problem for a harder-to-see one. It is the same
-limitation §6 already measured: embeddings here are MiniLM over title and
-artist text, which tracks language and naming pattern as readily as genre.
-"Nearest cluster" can only be as meaningful as the clustering it is measured
-in - reliable for a cluster shaped by one artist's genre (Travis Scott), not
-for one shaped by industry and language (T-Series). Audio features would be
-the actual fix; YouTube does not expose them.
+- Native: 22 tracks scoring `>= 0.5` — clears FLOOR (12).
+- LENGTH: target `floor(22 / 0.75) = 29`.
+- GUARD: modal genre `'music of asia'` — an exact 21–21 vote tie against
+  `'pop'` among its 22 labeled native members, resolved alphabetically
+  (`reports/backfill_plan.md`, "Genre tie-break"). Exactly one track
+  anywhere in the cluster's eligible outside pool carries that genre: Doja
+  Cat - "Streets (Official Video)".
+- RANK: nothing to rank — one candidate.
+- CEILING: that candidate sits at cosine distance **1.1166**, past the 1.0
+  ceiling. Refused.
+- Result: **0 backfilled**, final length **22**, short by **7** of its 29
+  target. Quota to write it as-is: 1,151 units.
 
-The eval does not move, and cannot: `evaluate.py` never imports or calls
-`writer.plan()`. `cluster_diverse`, the only clustering-aware strategy in the
-rediscovery eval, is `recommend.by_cluster_diverse` - a different, top-N
-diversification strategy unrelated to backfill's cluster-fill logic. Re-run
-with and without this change (`python -m taste_engine.evaluate --both
---test-days 30`, backfill code stashed for the "before" run): every strategy's
-numbers were identical to three decimals in both the single-split and
-across-split tables. That is a verified null, not an assumed one - the same
-check `scripts/verify_strict_null.py` performs elsewhere in this repo.
+Two rebuilds got here. The first filled shallow clusters from the nearest whole cluster by centroid, which padded a Hindi-film cluster with Travis Scott. The second added the genre guard and ranked by score, which gave six hip-hop playlists the same six backfill tracks — ten distinct tracks across fifty-two slots. Both failures showed up by reading the generated playlists, not by any test.
+
+What the measurement found is that the genre labels are too coarse to carry the weight the design puts on them. YouTube's topic categories tag "pop" on 2,176 of 2,918 canonical tracks and "hip hop" on 1,695; six of the ten qualifying clusters have no discriminative genre at all. So the guard does real work on exactly one cluster — T-Series, where "music of asia" is rare enough to mean something — and is close to a no-op everywhere else. The floor and the length formula do most of the actual work; the ceiling exists to refuse a single track.
+
+The design that survived is one that refuses rather than fills. That is a smaller claim than the rules above might suggest, and it is the one the data supports.
+
+`evaluate.py` imports nothing from `writer.py` — confirmed directly, no
+`writer` reference anywhere in the module — and `cluster_diverse`, the only
+clustering-aware rediscovery strategy, is `recommend.by_cluster_diverse`,
+unrelated to backfill's cluster-fill logic. No change to FLOOR, LENGTH,
+GUARD, RANK or CEILING can move the evaluation. Re-verified for the current
+mechanism by running `python -m taste_engine.evaluate --both --test-days 30`
+and recording the result: `reports/eval_invariance_backfill.txt` — one
+recorded run against current code, not a two-run byte-identical comparison
+(the earlier stashed-code before/after check verified only the now-deleted
+nearest-centroid mechanism).
 
 No test in the suite makes a live API call; `tests/fake_youtube.py` stands in.
 
@@ -894,7 +913,7 @@ src/taste_engine/
   writer.py          Phase 4 — quota-aware, resumable, self-verifying write
   cli.py             Phase 4 — the `taste-engine` command
 notebooks/01_eda.ipynb
-tests/               301 tests
+tests/               337 tests
 ```
 
 ## 10. Running it
@@ -913,10 +932,10 @@ python -m taste_engine.score                   # top tracks
 python -m taste_engine.embed                   # clusters
 python -m taste_engine.cluster_eval            # clustering comparison, §6
 python -m taste_engine.recommend               # candidate playlists
-python -m taste_engine.evaluate --both --test-days 30   # both tasks, §2
+python -m taste_engine.evaluate --split 2026-06-01 --test-end 2026-07-01 -k 50 --half-life 14   # replay, §2
 scripts/run.sh scripts/nested_eval.py                   # the headline, §1
 scripts/run.sh scripts/final_numbers.py                 # every other figure
-python -m pytest -q                            # 301 tests
+python -m pytest -q                            # 337 tests
 ```
 
 The venv lives on the WSL filesystem (`~/.venvs/taste-engine`) while the repo
