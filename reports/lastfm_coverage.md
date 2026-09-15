@@ -263,12 +263,23 @@ Full run: 2,918 canonical tracks, both passes complete, zero API errors
 (see item 10).
 
 **640 of 2,918 canonical tracks (21.9%) have at least one track-level tag**
-(pass 1 `feat_kept`: 627 fresh + 13 carried over from an earlier smoke test
-on the same real database, verified identical methodology; pass 2
-`feat_stripped` added 0 more - see above). This is the headline number: **not
-viable as a standalone track-level signal at face value** - see the zero-tag
-breakdown in item 10, which is the more informative way to read this same
-21.9%.
+(pass 1 `feat_kept`: 627 fresh from the full run + 13 carried over from an
+earlier `--limit 20` smoke test on the same real database, skipped rather
+than re-fetched by the full run's own idempotency check; pass 2
+`feat_stripped` added 0 more - see above). The carryover was checked for
+contamination, not assumed clean: all 20 smoke-test rows carry
+`fetched_at` between `10:22:22` and `10:22:38`, which is after the explicit
+`DELETE FROM track_tags/track_tag_lookups` run immediately before that
+smoke test (to clear an earlier, pre-bug-fix smoke test's bad `'nan'`-artist
+rows) and before the full run's own remaining ~2,898 tracks, which span
+`10:22` through `10:51`. **Population is all canonical music tracks under
+the current `STRICT_MUSIC` filter (`score.scored_tracks(conn)` with
+defaults) - no score floor, no time window** - the same 2,918-track
+population the README's headline figures use, not the smaller
+`MIN_SCORE`-eligible pool backfill work cares about. This is the headline
+number: **not viable as a standalone track-level signal at face value** -
+see the zero-tag breakdown in item 10, which is the more informative way to
+read this same 21.9%.
 
 ## 4. Match rate - artist-level fallback (reported separately, not merged)
 
@@ -349,7 +360,9 @@ Built from the top 100 tags by coverage. Categories found, with examples:
 - **Artist name used as its own tag** (redundant with the artist field,
   contributes nothing genre-wise): `Drake`(51) `The Weeknd`(32)
   `travis scott`(25) `Kanye West`(14) `don toliver`(13) `kendrick lamar`(12)
-  `Lana Del Rey`(10).
+  `Lana Del Rey`(10). `Olivia`(14) is almost certainly the same category (a
+  truncated `Olivia Rodrigo`) but is flagged as unverified rather than
+  silently folded in - not checked against Last.fm directly.
 - **Demographic/nationality tags** (same kind as the brief's `male
   vocalists` example, both confirmed present): `american`(43) `british`(38)
   `female vocalists`(29) `Canadian`(25) `male vocalists`(12).
@@ -468,9 +481,13 @@ exists to get away from (SECTION 0, item 9: 43.2% of current clusters are
 already single-artist).
 
 If the follow-up decision is "build a fuller genre signal on top of Last.fm
-tags," the honest framing is: usable for ~22% of tracks outright, a
-same-artist-wide proxy for another ~4-9% depending on tolerance for
-artist-level granularity, and no signal at all - track or artist - for the
-remaining ~70%. Whether that's worth building on depends entirely on
-whether the follow-up brief's use case can tolerate a signal that thin, or
-needs a fallback for the majority case regardless.
+tags," the honest framing is: usable for ~22% of tracks outright (item 3);
+an artist-wide proxy adds real tags for another 4.0% (118/2,918, item 4) or,
+at the loosest tolerance (an artist merely resolving on Last.fm at all, tags
+or not), 8.6% (251/2,918); and no signal whatsoever - track or artist - for
+the remaining majority. These are two different quantities, not a range on
+one - stated separately rather than compressed, since a reader deciding
+whether to build on this needs to know which one they're getting. Whether
+any of this is worth building on depends entirely on whether the follow-up
+brief's use case can tolerate a signal this thin, or needs a fallback for
+the majority case regardless.

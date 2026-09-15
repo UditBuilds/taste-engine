@@ -162,26 +162,25 @@ def single_artist_cluster_rate(conn, pool, threshold: float = 0.8) -> dict:
 def print_report(conn, pool) -> None:
     pool_size = len(pool)
     _header(f"Match rate - track level ({pool_size:,} canonical tracks)")
-    for variant in ("feat_kept", "feat_stripped"):
-        n_attempted = conn.execute(
-            "SELECT COUNT(*) FROM track_tag_lookups WHERE source='track' AND query_variant=?",
-            (variant,),
-        ).fetchone()[0]
-        if not n_attempted:
-            continue
-        matched, total, rate = match_rate(conn, pool_size, "track", variant)
-        print(f"  [{variant}] {matched:,}/{total:,} = {rate:.1%}")
-
-    _header("Match rate - artist-level fallback (reported separately)")
-    for variant in ("feat_kept", "feat_stripped"):
-        n_attempted = conn.execute(
-            "SELECT COUNT(*) FROM track_tag_lookups WHERE source='artist' AND query_variant=?",
-            (variant,),
-        ).fetchone()[0]
-        if not n_attempted:
-            continue
-        matched, total, rate = match_rate(conn, pool_size, "artist", variant)
-        print(f"  [{variant}] {matched:,}/{total:,} = {rate:.1%}")
+    for source in ("track", "artist"):
+        # feat_kept is attempted against the whole pool, so "/pool_size" is
+        # the right headline denominator. feat_stripped only ever retries
+        # whatever feat_kept already failed, so dividing by pool_size there
+        # produces a technically-correct but misleading near-zero number -
+        # report it against what was actually retried instead.
+        for variant in ("feat_kept", "feat_stripped"):
+            n_attempted = conn.execute(
+                "SELECT COUNT(*) FROM track_tag_lookups WHERE source=? AND query_variant=?",
+                (source, variant),
+            ).fetchone()[0]
+            if not n_attempted:
+                continue
+            denom = pool_size if variant == "feat_kept" else n_attempted
+            matched, _total, rate = match_rate(conn, denom, source, variant)
+            label = f"{matched:,}/{denom:,}" + ("" if variant == "feat_kept" else " retried")
+            print(f"  [{source}/{variant}] {label} = {rate:.1%}")
+        if source == "track":
+            _header("Match rate - artist-level fallback (reported separately)")
 
     _header("Tag-weight percentiles")
     for source in ("track", "artist"):
