@@ -910,7 +910,7 @@ default):
 
 Two rebuilds got here. The first filled shallow clusters from the nearest whole cluster by centroid, which padded a Hindi-film cluster with Travis Scott. The second added the genre guard and ranked by score, which gave six hip-hop playlists the same six backfill tracks — ten distinct tracks across fifty-two slots. Both failures showed up by reading the generated playlists, not by any test.
 
-What the measurement found is that the genre labels are too coarse to carry the weight the design puts on them. YouTube's topic categories tag "pop" on 2,176 of 2,918 canonical tracks and "hip hop" on 1,695; six of the ten qualifying clusters have no discriminative genre at all. So the guard does real work on exactly one cluster — T-Series, where "music of asia" is rare enough to mean something — and is close to a no-op everywhere else. The floor and the length formula do most of the actual work; the ceiling exists to refuse a single track.
+What the measurement found is that the genre labels are too coarse to carry the weight the design puts on them. YouTube's topic categories tag "pop" on 2,176 of 2,918 canonical tracks and "hip hop" on 1,695; five of the ten qualifying clusters have no discriminative genre at all. So the guard does real work on exactly one cluster — T-Series, where "music of asia" is rare enough to mean something — and is close to a no-op everywhere else. The floor and the length formula do most of the actual work; the ceiling exists to refuse a single track.
 
 The design that survived is one that refuses rather than fills. That is a smaller claim than the rules above might suggest, and it is the one the data supports.
 
