@@ -111,6 +111,7 @@ wrong number that looks fine.
 | playlist titles **pseudonymised** | Public repo, personal titles, and every metric treats them as opaque labels. `redact.py`; mapping is gitignored. |
 | **SUPERSEDED 2026-09-14** — shallow-cluster backfill by nearest **embedding centroid**, `MIN_SCORE = 0.5` floor | Fan-re-upload degradation was worse than a shorter, floor-respecting playlist. Not tuned to flatter: T-Series's backfill is musically incoherent (Joji, Playboi Carti, Doja Cat) and that's reported in README, not hidden. Replaced by depth-based length (`MIN_CLUSTER_NATIVE`/`MAX_BACKFILL_SHARE`) plus a genre guard on each backfill candidate — briefs/backfill_constraint.md. |
 | `BACKFILL_ENABLED = False` (2026-09-15) | Joji's first live dry run backfilled 3 Playboi Carti tracks + 1 Don Toliver track, admitted by genre `pop` at distance 0.55–0.70 — well inside the 1.0 ceiling, so no threshold fixes it. Both admission signals measure the wrong quantity: topicCategories tags `pop`/`hip hop` on most of the whole library (not discriminative), and the embedding space is title+artist text, not audio. FLOOR/LENGTH/GUARD/RANK/CEILING code is unchanged and unreached, not deleted. `--backfill` re-enables it for one run — briefs/backfill_toggle.md. |
+| Last.fm tags **not integrated** into scoring/clustering (2026-09-15) | Measurement-only precursor for a future decision brief: 640/2,918 canonical tracks (21.9%) matched directly, +118 (4.0%) via artist-name fallback; dominant failure is the track having zero tags on Last.fm, not a failed lookup. Not viable as a standalone per-track genre/mood signal. `lastfm.py`, `track_tags`/`track_tag_lookups` tables exist for possible future combination with other signals — nothing in scoring/clustering/write-path reads them. `reports/lastfm_coverage.md`. |
 
 ### Cluster ids are not identifiers
 
@@ -151,7 +152,8 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
 
 ## State
 
-- 307 tests pass. Phases 1–4 built.
+- 392 tests pass. Phases 1–4 built; Phase 5 (Last.fm tag coverage
+  measurement, table-only) added 2026-09-15.
 - Takeout parsed; all 30,440 videos resolved (609 units spent, quota ledger has
   the record).
 - **Live write-back has now run.** The first `--commit` against the real
@@ -193,6 +195,21 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
   README's opener uses the measured figures (2,918 canonical songs).
 - `data/` is entirely gitignored: Takeout, `taste.db`, embeddings, alias map,
   contamination sample.
+- **Last.fm tag coverage measured (2026-09-15), not integrated.** A
+  precursor measurement for a future decision brief, not a pipeline change:
+  `lastfm.py` (rate-limited `track.getTopTags`/`artist.getTopTags` client,
+  ~5 req/s, retried on 429/5xx) plus `track_tags` and `track_tag_lookups`
+  tables. Match rate 640/2,918 canonical tracks (21.9%) matched directly,
+  another 118 (4.0%) via artist-name fallback; the dominant failure mode is
+  the track having zero tags on Last.fm, not a failed match. Top tags skew
+  genre-ish but include real junk (decade tags, "seen live", language
+  tags). Verdict: **not** usable as a standalone per-track signal —
+  `reports/lastfm_coverage.md`. Caught and fixed along the way: a
+  NaN-truthiness bug in this new code's own artist resolution, and a
+  pre-existing, identically-shaped bug in shipped `embed.artist_from_channel`
+  (see Known open items #6 and the Decisions table above) — found while
+  cross-checking Last.fm's numbers against the clustering ARI, fixed in a
+  separate, later brief.
 
 ### Known open items
 
@@ -255,6 +272,8 @@ src/taste_engine/
   auth.py         OAuth (write only; reads use an API key)
   writer.py       quota-aware, resumable, self-verifying write; backfills a
                   shallow cluster from its nearest neighbours, never below floor
+  lastfm.py       Last.fm tag coverage measurement — client + matching; not
+                  read by scoring/clustering/write-path (State, above)
   cli.py          `taste-engine`
 ```
 
