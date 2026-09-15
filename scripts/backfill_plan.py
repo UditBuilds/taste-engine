@@ -210,7 +210,15 @@ def main() -> int:
         backfill_provenance: dict[int, list[tuple[str, str, float, str]]] = {}
         mismatches = []
         for cid in sorted(cleared_excluded):
-            p = writer.plan(conn, cluster=cid, mode="rediscover")
+            # backfill=True (Build Brief 5 made config.BACKFILL_ENABLED=False
+            # the shipped default): everything below this call - naive-vs-
+            # strict guard, distance ranking, the T-Series/Doja Cat ceiling
+            # narrative, provenance - is the enabled-mode COMPARISON, kept
+            # per briefs/backfill_toggle.md, not what ships. "What ships"
+            # above uses p["native_count"] from this same call, which is
+            # identical either way: native selection runs unconditionally,
+            # before writer._select_with_backfill's backfill_enabled branch.
+            p = writer.plan(conn, cluster=cid, mode="rediscover", backfill=True)
             if p["native_count"] != native_excluded.get(cid, 0):
                 mismatches.append(
                     f"{names[cid]!r}: plan()={p['native_count']} "
@@ -236,6 +244,12 @@ def main() -> int:
                     len(_pre_ceiling_candidates(rediscover_frame, cid, p["modal_genre"])),
                     deficit,
                 )
+            costs = config.QUOTA_COSTS
+            ships_units = (
+                costs[writer.CREATE_METHOD]
+                + costs[writer.INSERT_METHOD] * p["native_count"]
+                + costs[writer.LIST_METHOD]
+            )
             rows.append({
                 "cluster": cid, "name": names[cid], "native": p["native_count"],
                 "target_length": p["target_length"],
@@ -243,7 +257,7 @@ def main() -> int:
                 "naive_matched": naive_matched,
                 "strict_modal": strict_modal, "strict_admit": strict_admit,
                 "final_count": p["count"], "shortfall": p["shortfall"],
-                "units": p["units"],
+                "units": p["units"], "ships_units": ships_units,
             })
             if p["backfilled_count"]:
                 tracks = p["tracks"]
@@ -378,7 +392,27 @@ def main() -> int:
 
         skipped = sorted(set(real_clusters) - cleared_excluded)
 
-        # ---- quota ----
+        # ---- quota: what ships (config.BACKFILL_ENABLED=False) ----
+        ships_total_units = sum(r["ships_units"] for r in rows)
+        ships_exceeds_cap = ships_total_units > config.QUOTA_DAILY_CAP
+        ships_affordable = 0
+        running = 0
+        for r in sorted(rows, key=lambda r: r["ships_units"]):
+            if running + r["ships_units"] > config.QUOTA_DAILY_CAP:
+                break
+            running += r["ships_units"]
+            ships_affordable += 1
+
+        print(f"qualifying clusters: {len(rows)}   skipped (below floor): {len(skipped)}")
+        print(f"WHAT SHIPS (backfill disabled, native-only) - total quota to write "
+              f"every qualifying cluster today: {ships_total_units:,} units "
+              f"(cap {config.QUOTA_DAILY_CAP:,})")
+        print(f"  exceeds the daily cap: {'yes' if ships_exceeds_cap else 'no'}")
+        print(f"  could write {ships_affordable} of {len(rows)} today, cheapest-first, "
+              f"without exceeding the cap")
+        print()
+
+        # ---- quota: if backfill were enabled (comparison only) ----
         total_units = sum(r["units"] for r in rows)
         exceeds_cap = total_units > config.QUOTA_DAILY_CAP
         affordable = 0
@@ -389,11 +423,10 @@ def main() -> int:
             running += r["units"]
             affordable += 1
 
-        print(f"qualifying clusters: {len(rows)}   skipped (below floor): {len(skipped)}")
-        print(f"total quota to write every qualifying cluster today: "
+        print(f"IF BACKFILL WERE ENABLED (comparison, not what ships) - total quota: "
               f"{total_units:,} units (cap {config.QUOTA_DAILY_CAP:,})")
-        print(f"exceeds the daily cap: {'yes' if exceeds_cap else 'no'}")
-        print(f"could write {affordable} of {len(rows)} today, cheapest-first, "
+        print(f"  exceeds the daily cap: {'yes' if exceeds_cap else 'no'}")
+        print(f"  could write {affordable} of {len(rows)} today, cheapest-first, "
               f"without exceeding the cap")
 
         # ---- assemble the report ----
@@ -401,11 +434,49 @@ def main() -> int:
         lines.append("# Backfill Plan - Floor, Length, Genre Guard, Distance Rank\n")
         lines.append("Briefs: `briefs/backfill_constraint.md` (floor, length, guard), "
                       "`briefs/backfill_rank.md` (distance ranking within the "
-                      "guarded pool). Dry-run only, no API calls, no `--commit`. "
-                      "Script: `scripts/backfill_plan.py`. Rules implemented in "
-                      "`writer.py`/`config.py` "
+                      "guarded pool), `briefs/backfill_toggle.md` (the "
+                      "BACKFILL_ENABLED switch below). Dry-run only, no API calls, "
+                      "no `--commit`. Script: `scripts/backfill_plan.py`. Rules "
+                      "implemented in `writer.py`/`config.py` "
                       f"(`MIN_CLUSTER_NATIVE={config.MIN_CLUSTER_NATIVE}`, "
                       f"`MAX_BACKFILL_SHARE={config.MAX_BACKFILL_SHARE}`).\n")
+        lines.append(
+            f"**`config.BACKFILL_ENABLED = {config.BACKFILL_ENABLED}`** - backfill "
+            "is off by default (see config.py's comment: both admission signals, "
+            "YouTube topicCategories and title+artist text embeddings, measure the "
+            "wrong quantity for \"sounds like this cluster\" - the Naive vs strict "
+            "genre guard and Distance ranking sections below are the measurement "
+            "that motivated leaving it off). The **What ships** section "
+            "immediately below is what a real `taste-engine write` produces today; "
+            "every section after it, including the per-cluster plan table, is the "
+            "enabled-mode comparison kept as evidence for that default - it is "
+            "*not* what ships. `--backfill` re-enables it for a single run.\n"
+        )
+
+        lines.append("## What ships (config.BACKFILL_ENABLED=False)\n")
+        lines.append(
+            "Native eligible tracks only, in the same score-desc order the "
+            "enabled path would rank them in first - no LENGTH target, no "
+            "GUARD, no RANK, no CEILING. `native` here is the same number "
+            "`writer.plan()` would report as `native_count` either way: native "
+            "selection runs before the backfill_enabled branch, so this needs "
+            "no separate disabled-mode `writer.plan()` call to compute.\n"
+        )
+        lines.append("| cluster | native = shipped length | quota units |")
+        lines.append("|---|---|---|")
+        for r in sorted(rows, key=lambda r: r["name"]):
+            lines.append(f"| {r['name']} | {r['native']} | {r['ships_units']:,} |")
+        lines.append(
+            f"\n- Total quota to write every qualifying cluster's playlist "
+            f"today, native-only: **{ships_total_units:,} units** (cap "
+            f"{config.QUOTA_DAILY_CAP:,}). **Exceeds the cap: "
+            f"{'yes' if ships_exceeds_cap else 'no'}.**\n"
+        )
+        lines.append(
+            f"- Cheapest-first, {ships_affordable} of {len(rows)} of these "
+            "playlists could actually be written today without breaching the "
+            "cap.\n"
+        )
 
         lines.append("## Which pool clears the floor\n")
         lines.append(
@@ -489,13 +560,17 @@ def main() -> int:
                 f"{r['strict_admit']} |"
             )
 
-        lines.append("\n## Per-cluster dry-run plan (naive guard - what ships)\n")
         lines.append(
-            "`backfilled` here is the actual shipped count: guard **and** "
-            "the `MAX_BACKFILL_DISTANCE` ceiling both applied, exactly what "
-            "`writer.plan()` returns. It can be lower than the guard-only "
-            "`naive admit` column in the table above - see Distance ranking "
-            "below for which clusters (if any) that ceiling affected.\n"
+            "\n## Per-cluster plan if backfill were enabled (naive guard)\n"
+        )
+        lines.append(
+            "**Not what ships** - `config.BACKFILL_ENABLED=False`; see What "
+            "ships above for the real per-cluster numbers. `backfilled` here "
+            "is guard **and** the `MAX_BACKFILL_DISTANCE` ceiling both "
+            "applied, exactly what `writer.plan(..., backfill=True)` returns. "
+            "It can be lower than the guard-only `naive admit` column in the "
+            "table above - see Distance ranking below for which clusters (if "
+            "any) that ceiling affected.\n"
         )
         lines.append("| cluster | native | backfilled | final length | target | "
                       "modal genre | short by | quota units |")
@@ -630,11 +705,17 @@ def main() -> int:
             for cid in skipped:
                 lines.append(f"| {names[cid]} | {native_excluded.get(cid, 0)} |")
 
-        lines.append("\n## Quota\n")
+        lines.append("\n## Quota if backfill were enabled (comparison, not what ships)\n")
+        lines.append(
+            "See What ships at the top for the real (native-only) quota total "
+            f"- **{ships_total_units:,} units**. Everything below is what these "
+            "same qualifying clusters would cost with `--backfill`.\n"
+        )
         lines.append(f"- Qualifying clusters: **{len(rows)}** of {len(real_clusters)}.\n")
         lines.append(f"- Total quota to write every qualifying cluster's playlist "
-                      f"today: **{total_units:,} units** (breakdown per cluster in "
-                      "the table above; each is `50 + 50*count + 1`).\n")
+                      f"today, if backfill were enabled: **{total_units:,} units** "
+                      "(breakdown per cluster in the table above; each is "
+                      "`50 + 50*count + 1`).\n")
         lines.append(f"- Daily cap: {config.QUOTA_DAILY_CAP:,} units. "
                       f"**Exceeds the cap: {'yes' if exceeds_cap else 'no'}.**\n")
         lines.append(f"- Cheapest-first, {affordable} of {len(rows)} of these "

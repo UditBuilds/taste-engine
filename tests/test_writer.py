@@ -702,7 +702,7 @@ class TestBackfill:
     def test_native_at_floor_boundary_gives_length_16(self, env, monkeypatch, guarded):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         assert p["native_count"] == self.FLOOR == 12
         assert p["target_length"] == self.TARGET == 16
         assert p["modal_genre"] == "pop"
@@ -712,7 +712,7 @@ class TestBackfill:
     ):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         assert p["count"] == self.TARGET
         assert p["backfilled_count"] == 4
         share = p["backfilled_count"] / p["count"]
@@ -722,7 +722,7 @@ class TestBackfill:
     def test_guard_prefers_genre_match_over_a_higher_score(self, env, monkeypatch, guarded):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         native_ids = {f"c1nat{i:05d}" for i in range(self.FLOOR)}
         backfilled_ids = set(p["tracks"]["video_id"]) - native_ids
         # top 4 of cluster 2's 5 matching tracks, by score
@@ -736,7 +736,7 @@ class TestBackfill:
         expected list: this is what would catch it silently relaxing."""
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         modal = p["modal_genre"]
         for _, row in p["tracks"].iterrows():
             assert row["cluster"] == 1 or modal in tidy_genres(row["genres"])
@@ -744,7 +744,7 @@ class TestBackfill:
     def test_every_returned_track_clears_min_score(self, env, monkeypatch, guarded):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         assert (p["tracks"]["score"] >= writer.config.MIN_SCORE).all()
         assert "c1belowfloor" not in set(p["tracks"]["video_id"])
 
@@ -753,7 +753,7 @@ class TestBackfill:
     ):
         conn, _, _ = env
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         assert p["backfilled_count"] > 0
         assert p["title"] == "taste-engine: Cluster One"
 
@@ -764,7 +764,7 @@ class TestBackfill:
         boosted = guarded.copy()
         boosted.loc[boosted["video_id"] == "c2pop00000", "play_count"] = 999
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: boosted)
-        p = writer.plan(conn, cluster=1, exclude_top=1)  # mode defaults to rediscover
+        p = writer.plan(conn, cluster=1, exclude_top=1, backfill=True)  # mode defaults to rediscover
         assert "c2pop00000" not in set(p["tracks"]["video_id"])
 
         from taste_engine.recommend import favourites
@@ -799,7 +799,7 @@ class TestBackfill:
         ]
         rare = pd.DataFrame(rows)
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: rare)
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         assert p["modal_genre"] == "music of asia"
         assert p["backfilled_count"] == 0
         assert p["backfill_by_cluster"] == []
@@ -834,7 +834,7 @@ class TestBackfill:
         monkeypatch.setattr(writer, "_reduced_embeddings", fake_reduced)
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: frame)
 
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         assert "c2onlymatch" not in set(p["tracks"]["video_id"])
         assert p["backfilled_count"] == 0
         assert p["backfill_by_cluster"] == []
@@ -855,10 +855,69 @@ class TestBackfill:
         ]
         unlabeled = pd.DataFrame(rows)
         monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: unlabeled)
-        p = writer.plan(conn, cluster=1, mode="top")
+        p = writer.plan(conn, cluster=1, mode="top", backfill=True)
         assert p["modal_genre"] is None
         assert p["backfilled_count"] == 0
         assert p["count"] == self.FLOOR
+
+    # --- Build Brief 5: BACKFILL_ENABLED defaults off ------------------------
+    # `guarded` has real backfill material available (cluster 2's 5 matching
+    # 'pop' tracks) - these tests confirm disabled means none of it is used,
+    # not just that the fixture happens to have nothing to draw from.
+
+    def test_disabled_by_the_real_default_returns_native_only(
+        self, env, monkeypatch, guarded
+    ):
+        """No `backfill=` override, no config monkeypatch: this is exactly
+        what a bare `taste-engine write --cluster-name X` does today."""
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert p["backfill_enabled"] is False
+        assert p["native_count"] == self.FLOOR
+        assert p["count"] == self.FLOOR
+        assert p["backfilled_count"] == 0
+        assert p["backfill_by_cluster"] == []
+        assert set(p["tracks"]["video_id"]) == {f"c1nat{i:05d}" for i in range(self.FLOOR)}
+
+    def test_disabled_reports_no_shortfall(self, env, monkeypatch, guarded):
+        """LENGTH is never computed when disabled - target_length is the
+        native count itself, so shortfall can't be a relaxed guard reporting
+        0 after the fact (briefs/backfill_toggle.md's explicit failure mode:
+        floor(native / (1 - MAX_BACKFILL_SHARE)) then reporting the gap)."""
+        conn, _, _ = env
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert p["target_length"] == p["native_count"] == self.FLOOR
+        assert p["shortfall"] == 0
+
+    def test_config_default_true_is_honored_with_no_cli_override(
+        self, env, monkeypatch, guarded
+    ):
+        """The parameter path (`backfill=True`) is exercised throughout this
+        class; this is the only test of the *config* path - BACKFILL_ENABLED
+        flipped on with no per-call override at all."""
+        conn, _, _ = env
+        monkeypatch.setattr(writer.config, "BACKFILL_ENABLED", True)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: guarded)
+        p = writer.plan(conn, cluster=1, mode="top")
+        assert p["backfill_enabled"] is True
+        assert p["backfilled_count"] == 4  # same boundary case as the top of this class
+
+    @pytest.mark.parametrize("backfill_flag", [None, False, True])
+    def test_floor_rejects_regardless_of_backfill_flag(
+        self, env, monkeypatch, backfill_flag
+    ):
+        conn, _, _ = env
+        rows = [
+            _track(f"c1nat{i:05d}", round(0.9 - i * 0.01, 2), 1, "Cluster One", ["pop"])
+            for i in range(self.FLOOR - 1)  # one short of the floor
+        ]
+        thin = pd.DataFrame(rows)
+        monkeypatch.setattr("taste_engine.recommend.build", lambda *a, **k: thin)
+        with pytest.raises(writer.WriteBlocked, match="below the floor"):
+            writer.plan(conn, cluster=1, mode="top", backfill=backfill_flag)
+        assert writer.list_written(conn).empty
 
 
 class TestBackfillDistanceRanking:
@@ -938,7 +997,7 @@ class TestBackfillDistanceRanking:
 
         backfills = {}
         for req in (1, 2, 3):
-            p = writer.plan(conn, cluster=req, mode="top")
+            p = writer.plan(conn, cluster=req, mode="top", backfill=True)
             assert p["backfilled_count"] == self.DEFICIT
             native_ids = {r["video_id"] for r in self._native(req)}
             backfills[req] = set(p["tracks"]["video_id"]) - native_ids
@@ -999,7 +1058,7 @@ class TestBackfillDistanceRanking:
 
         backfills = {}
         for req in requesters:
-            p = writer.plan(conn, cluster=req, mode="top")
+            p = writer.plan(conn, cluster=req, mode="top", backfill=True)
             assert p["backfilled_count"] == self.DEFICIT
             # one shared candidate cluster id for every requester - the
             # differentiation is entirely within-cluster, per-track
@@ -1109,3 +1168,25 @@ class TestLimit:
         )
         p = writer.plan(conn, mode="top")
         assert p["count"] == 50
+
+
+class TestBackfillFlagValidation:
+    """--backfill only means something when there is a cluster to backfill
+    against - same standard as --limit above: refused up front, not
+    silently ignored (briefs/backfill_toggle.md)."""
+
+    def test_backfill_without_a_cluster_is_refused(self, env):
+        conn, _, _ = env
+        with pytest.raises(writer.WriteBlocked, match="cluster-scoped"):
+            writer.plan(conn, backfill=True, limit=5, tracks=make_tracks(5))
+        assert writer.list_written(conn).empty
+
+    def test_backfill_false_without_a_cluster_is_not_an_error(self, env, monkeypatch):
+        """Only an explicit *enable* with nothing to apply it to is refused -
+        False (or the unset default) is always a no-op, never an error."""
+        conn, _, _ = env
+        monkeypatch.setattr(
+            "taste_engine.recommend.build", lambda *a, **k: make_tracks(5)
+        )
+        p = writer.plan(conn, backfill=False, mode="top")
+        assert p["count"] == 5

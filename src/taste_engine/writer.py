@@ -208,11 +208,24 @@ def _distances_to_centroid(
 
 
 def _select_with_backfill(
-    frame: pd.DataFrame, cluster: int
+    frame: pd.DataFrame, cluster: int, backfill_enabled: bool
 ) -> tuple[pd.DataFrame, int, list[tuple[int, str, int]], str | None, int]:
     """Fill a cluster's native tracks up to a genre-guarded target length.
 
-    FLOOR is enforced by the caller (`plan()`) before this runs. LENGTH:
+    `backfill_enabled=False` (config.BACKFILL_ENABLED's default - Build Brief
+    5) short-circuits right after `native`/`native_count` below: the playlist is
+    the native eligible block alone, in the same score-desc/video_id-asc
+    order LENGTH/GUARD/RANK/CEILING would otherwise rank it in first, and
+    `target_length` is `native_count` itself - never
+    `_target_length(native_count)` - so `plan()`'s shortfall is structurally
+    0, not a relaxed guard reporting 0 after the fact. GUARD, RANK and
+    CEILING below are simply unreached, not deleted: both signals that feed
+    them (YouTube topicCategories, title+artist text embeddings) measure the
+    wrong quantity for "sounds like this cluster" - see config.py's
+    BACKFILL_ENABLED comment - so this stays off until one of them improves.
+
+    FLOOR is enforced by the caller (`plan()`) before this runs, unconditionally
+    on `backfill_enabled`. LENGTH:
     target = `_target_length(native)`. GUARD: a backfill candidate must carry
     the cluster's modal genre among its own tidied genre labels - this FILTERS
     the candidate pool and never changes. RANK: within that filtered pool,
@@ -246,6 +259,12 @@ def _select_with_backfill(
 
     native = _ranked(eligible[eligible["cluster"] == cluster])
     native_count = len(native)
+
+    if not backfill_enabled:
+        picked = native.reset_index(drop=True)
+        picked["distance"] = float("nan")
+        return picked, native_count, [], None, native_count
+
     target_length = _target_length(native_count)
     deficit = target_length - native_count
     if deficit <= 0:
@@ -309,6 +328,7 @@ def plan(
     mode: str = MODE_REDISCOVER,
     exclude_top: int | None = None,
     cluster_name: str | None = None,
+    backfill: bool | None = None,
 ) -> dict:
     """Choose the tracks and price the write. Spends nothing.
 
@@ -323,6 +343,11 @@ def plan(
 
     Shipping `top` while reporting a rediscovery number would mean the
     evaluation and the product were measuring different things.
+
+    `backfill` (Build Brief 5): `None` (the default) defers to
+    `config.BACKFILL_ENABLED`; an explicit `True`/`False` overrides it for
+    this call only - the CLI's `--backfill` passes `True`, never `False`
+    (the config default is already off, so there is no `--no-backfill`).
     """
     if mode not in MODES:
         raise WriteBlocked(f"unknown mode {mode!r}; choose from {list(MODES)}")
@@ -333,6 +358,13 @@ def plan(
             "/ config.MAX_BACKFILL_SHARE), not requested. Drop --limit, or "
             "drop --cluster/--cluster-name for a plain top-N playlist."
         )
+    if backfill and cluster is None and not cluster_name:
+        raise WriteBlocked(
+            "--backfill only applies to a cluster-scoped write: there is no "
+            "native block to backfill against otherwise. Drop --backfill, or "
+            "add --cluster/--cluster-name."
+        )
+    effective_backfill = config.BACKFILL_ENABLED if backfill is None else backfill
 
     excluded_count = 0
     requested_cluster_name = None
@@ -388,7 +420,7 @@ def plan(
                     "- no playlist generated"
                 )
             tracks, native_count, backfill_summary, modal_genre, target_length = (
-                _select_with_backfill(frame, cluster)
+                _select_with_backfill(frame, cluster, effective_backfill)
             )
         else:
             effective_limit = 50 if limit is None else limit
@@ -430,6 +462,7 @@ def plan(
         "backfill_by_cluster": backfill_summary,
         "modal_genre": modal_genre,
         "target_length": target_length,
+        "backfill_enabled": effective_backfill,
         "shortfall": max(0, target_length - n) if target_length is not None else 0,
         "breakdown": {
             CREATE_METHOD: costs[CREATE_METHOD],
@@ -450,14 +483,21 @@ def render_plan(p: dict, ledger: QuotaLedger | None = None) -> str:
            "matching the eval)" if p.get("excluded_favourites") else ""),
     ]
     if p.get("target_length") is not None:
-        lines.append(
-            f"  length     {p['target_length']} = floor({p['native_count']} native / "
-            f"(1 - {config.MAX_BACKFILL_SHARE}))"
-        )
-        lines.append(
-            f"  modal genre {p['modal_genre']!r}" if p["modal_genre"]
-            else "  modal genre none - native block carries no genre label"
-        )
+        if p.get("backfill_enabled"):
+            lines.append(
+                f"  length     {p['target_length']} = floor({p['native_count']} native / "
+                f"(1 - {config.MAX_BACKFILL_SHARE}))"
+            )
+            lines.append(
+                f"  modal genre {p['modal_genre']!r}" if p["modal_genre"]
+                else "  modal genre none - native block carries no genre label"
+            )
+        else:
+            lines.append(
+                f"  length     {p['target_length']} native tracks (backfill "
+                "disabled - config.BACKFILL_ENABLED=False; pass --backfill "
+                "to enable it for this run)"
+            )
     lines.append(
         f"  tracks     {p['count']}"
         + (f"   ({p['shortfall']} short of the {p['target_length']} target - "

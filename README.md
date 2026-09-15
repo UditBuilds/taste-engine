@@ -823,8 +823,19 @@ fan-channel extended cuts that the conservative artist rule declines to merge.
 
 ### Backfill
 
-A `--cluster`/`--cluster-name` write applies five rules, in this order, every
-time:
+`config.BACKFILL_ENABLED = False` by default — a `--cluster`/`--cluster-name`
+write ships its native eligible tracks only, unless `--backfill` re-enables
+backfill for that one run. Both admission signals measure the wrong quantity
+for "sounds like this cluster": YouTube's topicCategories tag `pop` on 2,176
+of 2,918 canonical tracks and `hip hop` on 1,695 — not discriminative for
+most clusters — and the embedding space is a sentence-transformer over
+title + artist text, not audio. The Joji example below is what backfilling on
+those signals produced on its first live dry run. FLOOR still applies either
+way: a cluster below `config.MIN_CLUSTER_NATIVE` generates no playlist,
+enabled or not.
+
+When `--backfill` is passed (or `config.BACKFILL_ENABLED = True`), a
+`--cluster`/`--cluster-name` write applies five rules, in this order:
 
 1. **FLOOR** — a cluster with fewer than `config.MIN_CLUSTER_NATIVE` (12)
    eligible native tracks (`score >= config.MIN_SCORE`) generates no playlist
@@ -856,22 +867,46 @@ GUARD or CEILING running out of eligible material returns the playlist
 **short** rather than relaxing the rule that stopped it. FLOOR is stricter
 still: below it, no playlist is generated at all.
 
-**Worked example — T-Series / Pritam / Sony Music India**
-(`reports/backfill_plan.md`, "Per-cluster dry-run plan" and "Distance
-ranking"; reproduce with `scripts/backfill_plan.py`):
+**Worked example — Joji, the case that motivated the default**
+(`reports/backfill_plan.md`, "Per-cluster plan if backfill were enabled" and
+"Backfill provenance" — that script always computes both what ships and this
+comparison, no flag needed; reproducing it live needs
+`taste-engine write --cluster-name "Joji" --backfill`, since this is off by
+default):
 
-- Native: 22 tracks scoring `>= 0.5` — clears FLOOR (12).
-- LENGTH: target `floor(22 / 0.75) = 29`.
-- GUARD: modal genre `'music of asia'` — an exact 21–21 vote tie against
-  `'pop'` among its 22 labeled native members, resolved alphabetically
+- Native: 12 tracks scoring `>= 0.5` — clears FLOOR (12) right at the
+  boundary.
+- LENGTH: target `floor(12 / 0.75) = 16`.
+- GUARD: modal genre `'pop'`.
+- RANK + CEILING: 4 candidates admitted, all comfortably inside the 1.0
+  ceiling — Playboi Carti's "EVIL J0RDAN" (distance 0.5461), "OLYMPIAN"
+  (0.6374) and "Sky" (0.6831), and Don Toliver's "Tiramisu" (0.7039).
+- Result: **4 backfilled**, final length **16**, no shortfall. Quota to write
+  it: 851 units.
+- Every rule did exactly what it was designed to do — GUARD matched, CEILING
+  passed all four candidates with room to spare — and the result is still
+  three Playboi Carti tracks and a Don Toliver track on a Joji playlist.
+  `'pop'` is not a discriminative label (see above), and the embedding
+  distance is text similarity between titles and artist names, not audio
+  similarity. The rules worked; the signals they work on don't measure what
+  the guard needs them to.
+
+**Worked example — T-Series / Pritam / Sony Music India**
+(`reports/backfill_plan.md`, "Per-cluster plan if backfill were enabled" and
+"Distance ranking"; reproduce with `scripts/backfill_plan.py`):
+
+- Native: 21 tracks scoring `>= 0.5` — clears FLOOR (12).
+- LENGTH: target `floor(21 / 0.75) = 28`.
+- GUARD: modal genre `'music of asia'` — an exact vote tie against `'pop'`
+  among its labeled native members, resolved alphabetically
   (`reports/backfill_plan.md`, "Genre tie-break"). Exactly one track
   anywhere in the cluster's eligible outside pool carries that genre: Doja
   Cat - "Streets (Official Video)".
 - RANK: nothing to rank — one candidate.
 - CEILING: that candidate sits at cosine distance **1.1166**, past the 1.0
   ceiling. Refused.
-- Result: **0 backfilled**, final length **22**, short by **7** of its 29
-  target. Quota to write it as-is: 1,151 units.
+- Result: **0 backfilled**, final length **21**, short by **7** of its 28
+  target. Quota to write it as-is: 1,101 units.
 
 Two rebuilds got here. The first filled shallow clusters from the nearest whole cluster by centroid, which padded a Hindi-film cluster with Travis Scott. The second added the genre guard and ranked by score, which gave six hip-hop playlists the same six backfill tracks — ten distinct tracks across fifty-two slots. Both failures showed up by reading the generated playlists, not by any test.
 

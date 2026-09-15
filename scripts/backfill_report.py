@@ -3,6 +3,12 @@
 No --commit, no API calls: this only exercises writer.plan(), which is pure
 computation over the local database and the cached embeddings.
 
+Build Brief 5: this calls writer.plan() with no `backfill` override, so it
+shows exactly what `taste-engine write --cluster-name X` would - backfill
+disabled by default (config.BACKFILL_ENABLED). Pass a cluster name and read
+"backfill disabled" in the output if that's what you're seeing; it is not a
+bug in this script.
+
 Run:  scripts/run.sh scripts/backfill_report.py "T-Series" "Travis Scott"
 """
 from __future__ import annotations
@@ -29,9 +35,13 @@ def report(conn, cluster_name: str) -> None:
 
     print(f"  requested cluster        {p['cluster']} ({p['title']})")
     print(f"  native (>= {config.MIN_SCORE} in-cluster) {p['native_count']}")
-    print(f"  modal genre                {p['modal_genre']!r}")
-    print(f"  target length              {p['target_length']} "
-          f"= floor({p['native_count']} / (1 - {config.MAX_BACKFILL_SHARE}))")
+    if p["backfill_enabled"]:
+        print(f"  modal genre                {p['modal_genre']!r}")
+        print(f"  target length              {p['target_length']} "
+              f"= floor({p['native_count']} / (1 - {config.MAX_BACKFILL_SHARE}))")
+    else:
+        print(f"  backfill disabled          config.BACKFILL_ENABLED=False; "
+              "target length is the native count itself")
     print(f"  backfilled                {p['backfilled_count']} "
           f"from {len(p['backfill_by_cluster'])} neighbouring cluster(s)")
     for cid, cname, n in p["backfill_by_cluster"]:

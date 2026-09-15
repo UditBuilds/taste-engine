@@ -2,6 +2,7 @@
 
     taste-engine write --cluster 3 --limit 50            # dry run
     taste-engine write --cluster 3 --limit 50 --commit   # writes
+    taste-engine write --cluster-name "Joji" --backfill  # backfill for one run
     taste-engine write --resume 2 --commit               # continues a partial
     taste-engine write --rollback 2                      # deletes it (50 units)
     taste-engine written                                 # what exists
@@ -30,6 +31,13 @@ def cmd_write(args) -> int:
     conn = connect()
     try:
         ledger = QuotaLedger(conn, daily_cap=args.cap)
+
+        if args.backfill and (args.resume is not None or args.rollback is not None):
+            raise writer.WriteBlocked(
+                "--backfill has no effect with --resume/--rollback: neither "
+                "recomputes cluster selection, so the flag would silently do "
+                "nothing. Drop --backfill."
+            )
 
         # --- rollback -------------------------------------------------------
         if args.rollback is not None:
@@ -62,6 +70,7 @@ def cmd_write(args) -> int:
                 conn, cluster=args.cluster, limit=args.limit,
                 half_life=args.half_life, mode=args.mode,
                 exclude_top=args.exclude_top, cluster_name=args.cluster_name,
+                backfill=True if args.backfill else None,
             )
 
         if not args.commit:
@@ -187,6 +196,12 @@ def main(argv: list[str] | None = None) -> int:
         "--exclude-top", type=int,
         help="how many favourites --mode rediscover removes (default 50, "
              "the same number the eval holds out)",
+    )
+    w.add_argument(
+        "--backfill", action="store_true",
+        help="enable backfill for this run, overriding "
+             "config.BACKFILL_ENABLED=False. Only valid with "
+             "--cluster/--cluster-name, and not with --resume/--rollback.",
     )
     w.add_argument("--resume", type=int, metavar="ROW", help="continue a partial write")
     w.add_argument("--rollback", type=int, metavar="ROW", help="delete a written playlist")

@@ -93,6 +93,19 @@ STRICT_MUSIC = True
 STRICT_MAX_SECONDS = 15 * 60
 STRICT_MIN_SECONDS = 45
 
+# --- backfill master switch (Build Brief 5) ---------------------------------
+# First live dry run (Joji's cluster) backfilled 3 Playboi Carti tracks and 1
+# Don Toliver track, admitted by genre 'pop' at distances 0.55-0.70 - well
+# inside the 1.0 ceiling below, so no threshold fixes this. Both backfill
+# signals measure the wrong quantity: topicCategories tags 'pop' on 2,176 of
+# 2,918 canonical tracks and 'hip hop' on 1,695 (not discriminative - see
+# reports/backfill_plan.md), and the embedding space is a sentence-
+# transformer over title+artist text, not audio. Off by default until one of
+# those inputs improves; `--backfill` re-enables it for a single run
+# (writer.plan(..., backfill=True)). FLOOR still applies either way - see
+# writer._select_with_backfill.
+BACKFILL_ENABLED = False
+
 # --- backfill floor, length and genre guard (Build Brief 4) -----------------
 # A --cluster-name request can run out of eligible material long before a
 # fixed-size playlist fills: measured on this library, T-Series (492 tracks)

@@ -110,6 +110,7 @@ wrong number that looks fine.
 | half-life selected by **nested** tuning | Selecting and reporting on the same splits turned +1.9% into an upper bound presented as a finding. |
 | playlist titles **pseudonymised** | Public repo, personal titles, and every metric treats them as opaque labels. `redact.py`; mapping is gitignored. |
 | **SUPERSEDED 2026-09-14** — shallow-cluster backfill by nearest **embedding centroid**, `MIN_SCORE = 0.5` floor | Fan-re-upload degradation was worse than a shorter, floor-respecting playlist. Not tuned to flatter: T-Series's backfill is musically incoherent (Joji, Playboi Carti, Doja Cat) and that's reported in README, not hidden. Replaced by depth-based length (`MIN_CLUSTER_NATIVE`/`MAX_BACKFILL_SHARE`) plus a genre guard on each backfill candidate — briefs/backfill_constraint.md. |
+| `BACKFILL_ENABLED = False` (2026-09-15) | Joji's first live dry run backfilled 3 Playboi Carti tracks + 1 Don Toliver track, admitted by genre `pop` at distance 0.55–0.70 — well inside the 1.0 ceiling, so no threshold fixes it. Both admission signals measure the wrong quantity: topicCategories tags `pop`/`hip hop` on most of the whole library (not discriminative), and the embedding space is title+artist text, not audio. FLOOR/LENGTH/GUARD/RANK/CEILING code is unchanged and unreached, not deleted. `--backfill` re-enables it for one run — briefs/backfill_toggle.md. |
 
 ### Cluster ids are not identifiers
 

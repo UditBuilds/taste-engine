@@ -94,7 +94,11 @@ def main() -> int:
         new_ids: dict[int, list[str]] = {}
         for cid in qualifying:
             old_ids[cid] = list(old_backfill(rediscover_frame, cid)["video_id"])
-            p = writer.plan(conn, cluster=cid, mode="rediscover")
+            # backfill=True: Build Brief 5 made config.BACKFILL_ENABLED=False
+            # the default, but this script's entire purpose is comparing the
+            # old score-ranked backfill against the current distance-ranked
+            # one - without the override the NEW side would backfill nothing.
+            p = writer.plan(conn, cluster=cid, mode="rediscover", backfill=True)
             tracks = p["tracks"]
             new_ids[cid] = list(tracks[tracks["cluster"] != cid]["video_id"])
 
