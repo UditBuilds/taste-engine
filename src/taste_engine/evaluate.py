@@ -46,7 +46,13 @@ RANK_KEYS: dict[str, tuple[str, bool] | None] = {
 }
 
 
-def _window_end(split_date: str, test_days: int | None) -> str | None:
+def _window_end(
+    split_date: str, test_days: int | None, test_end: str | None = None
+) -> str | None:
+    if test_days and test_end:
+        raise ValueError("--test-days and --test-end are mutually exclusive")
+    if test_end:
+        return test_end
     if not test_days:
         return None
     return (datetime.fromisoformat(split_date) + timedelta(days=test_days)).date().isoformat()
@@ -59,19 +65,23 @@ def split_frames(
     cluster: bool = True,
     test_days: int | None = None,
     canonical: bool = True,
+    test_end: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Training frame scored as of the split, plus test-window play counts.
 
     `as_of=split_date` is the load-bearing detail: scoring the training window
     from today would leak the length of the test window into the recency term.
+
+    `test_end`, when given, bounds the test window at that absolute date
+    instead of `test_days` after `split_date` — see `_window_end`.
     """
     train = scored_tracks(
         conn, start=None, end=split_date, as_of=split_date, half_life=half_life,
         canonical=canonical,
     )
     test = scored_tracks(
-        conn, start=split_date, end=_window_end(split_date, test_days), as_of=None,
-        canonical=canonical,
+        conn, start=split_date, end=_window_end(split_date, test_days, test_end),
+        as_of=None, canonical=canonical,
     )
     if cluster and not train.empty:
         train = cluster_tracks(train)
@@ -103,13 +113,15 @@ def evaluate(
     strategies: list[str] | None = None,
     test_days: int | None = None,
     canonical: bool = True,
+    test_end: str | None = None,
 ) -> dict:
     split_date = split_date or config.EVAL_SPLIT_DATE
     k = k or config.EVAL_K
     names = strategies or list(STRATEGIES)
 
     train, test = split_frames(
-        conn, split_date, half_life, test_days=test_days, canonical=canonical
+        conn, split_date, half_life, test_days=test_days, canonical=canonical,
+        test_end=test_end,
     )
     if train.empty or test.empty:
         raise ValueError(f"empty train or test window at split {split_date}")
@@ -154,11 +166,13 @@ def evaluate(
     return {
         "split_date": split_date,
         "test_days": test_days,
+        "test_end": test_end,
         "k": k,
         "half_life": half_life or config.RECENCY_HALF_LIFE_DAYS,
         "train_tracks": len(train),
         "train_plays": int(train["play_count"].sum()),
         "test_tracks": len(test_ids),
+        "test_plays": int(test["play_count"].sum()),
         "repeatable": len(repeatable),
         "cold_start": len(test_ids - candidates),
         "ceiling": round(ceiling, 4),
@@ -175,6 +189,7 @@ def rediscovery_split(
     test_days: int | None = None,
     cluster: bool = True,
     canonical: bool = True,
+    test_end: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, set[str]]:
     """Hold out the obvious favourites, then ask what else gets played.
 
@@ -187,7 +202,7 @@ def rediscovery_split(
     """
     train, test = split_frames(
         conn, split_date, half_life, cluster=cluster, test_days=test_days,
-        canonical=canonical,
+        canonical=canonical, test_end=test_end,
     )
     # Shared with the writer's `--mode rediscover`, so the playlist that ships
     # is drawn from the same pool this scores. See `recommend.favourites`.
@@ -208,6 +223,7 @@ def evaluate_rediscovery(
     exclude_top: int = 50,
     test_days: int | None = None,
     canonical: bool = True,
+    test_end: str | None = None,
 ) -> dict:
     """recall@k and nDCG@k on the non-obvious tracks.
 
@@ -223,7 +239,7 @@ def evaluate_rediscovery(
     # strategy is not requested makes a half-life sweep tractable.
     candidates, truth, obvious = rediscovery_split(
         conn, split_date, half_life, exclude_top, test_days,
-        cluster="cluster_diverse" in names, canonical=canonical,
+        cluster="cluster_diverse" in names, canonical=canonical, test_end=test_end,
     )
     if candidates.empty or truth.empty:
         raise ValueError(f"empty candidate or truth set at split {split_date}")
@@ -254,6 +270,7 @@ def evaluate_rediscovery(
         "task": "rediscovery",
         "split_date": split_date,
         "test_days": test_days,
+        "test_end": test_end,
         "k": k,
         "exclude_top": exclude_top,
         "half_life": half_life or config.RECENCY_HALF_LIFE_DAYS,
@@ -537,18 +554,22 @@ def sweep(
     split_date: str | None = None,
     k: int | None = None,
     test_days: int | None = None,
+    test_end: str | None = None,
 ) -> pd.DataFrame:
     """Tune the decay against the hold-out, as section 7.1 asks.
 
     `most_played` is invariant to half-life, so its column doubles as a
     control: if it moves, something is leaking.
+
+    Single split (`split_date`, fixed across the sweep) - `test_end` is
+    coherent here, unlike the multi-split sweeps below.
     """
     half_lives = half_lives or [7, 14, 30, 60, 90, 180, 365, 10_000]
     k = k or config.EVAL_K
     column = f"{metric}@{k}" if metric in ("ndcg", "precision") else metric
     rows = []
     for half_life in half_lives:
-        report = evaluate(conn, split_date, k, half_life, test_days=test_days)
+        report = evaluate(conn, split_date, k, half_life, test_days=test_days, test_end=test_end)
         record = {"half_life": half_life}
         for _, r in report["results"].iterrows():
             record[r["strategy"]] = r[column]
@@ -652,12 +673,18 @@ def robustness(
 
 def _print_report(report: dict) -> None:
     k = report["k"]
-    horizon = f"{report['test_days']}d" if report["test_days"] else "to end of data"
+    if report.get("test_end"):
+        horizon = f"to {report['test_end']}"
+    elif report["test_days"]:
+        horizon = f"{report['test_days']}d"
+    else:
+        horizon = "to end of data"
     print(f"Temporal hold-out  train < {report['split_date']} <= test ({horizon})")
     print(f"  half-life         {report['half_life']:>8.0f} days")
     print(f"  train tracks      {report['train_tracks']:>8,} "
           f"({report['train_plays']:,} plays)")
-    print(f"  test tracks       {report['test_tracks']:>8,}")
+    print(f"  test tracks       {report['test_tracks']:>8,} "
+          f"({report['test_plays']:,} plays)")
     print(f"  seen in train     {report['repeatable']:>8,} "
           f"(cold start: {report['cold_start']:,})")
     print(f"  ceiling@{k}{'':<8}{report['ceiling']:>8.1%}")
@@ -716,7 +743,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Temporal hold-out evaluation")
     parser.add_argument("--split", default=config.EVAL_SPLIT_DATE)
     parser.add_argument("-k", type=int, default=config.EVAL_K)
-    parser.add_argument("--test-days", type=int, help="bound the test window")
+    window_group = parser.add_mutually_exclusive_group()
+    window_group.add_argument(
+        "--test-days", type=int,
+        help="bound the test window (relative, days after --split)",
+    )
+    window_group.add_argument(
+        "--test-end",
+        help="bound the test window at this absolute, exclusive end date "
+             "(YYYY-MM-DD) instead of a relative --test-days offset",
+    )
     parser.add_argument(
         "--rediscovery", action="store_true",
         help="score the non-obvious tracks instead of replay",
@@ -737,6 +773,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--metric", default="ndcg", choices=["ndcg", "precision"])
     args = parser.parse_args(argv)
+
+    if args.test_end and (
+        args.rediscovery or args.both or args.sweep_splits or args.robustness
+    ):
+        parser.error(
+            "--test-end pins a single absolute window and cannot be applied across "
+            "the independent, hardcoded splits that --rediscovery/--both (the "
+            "'across splits' table), --sweep-splits, and --robustness each sweep - "
+            "every split would get a different, inconsistent window width instead "
+            "of the uniform one --test-days gives them. Use --test-days for a "
+            "multi-split run, or drop those flags for a single-split one."
+        )
 
     conn = connect()
     try:
@@ -761,7 +809,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.rediscovery or args.both:
             _print_report(
                 evaluate(conn, args.split, args.k, args.half_life,
-                         test_days=args.test_days)
+                         test_days=args.test_days, test_end=args.test_end)
             )
 
         if args.sweep_half_life:
@@ -769,7 +817,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 sweep(
                     conn, args.metric, split_date=args.split, k=args.k,
-                    test_days=args.test_days,
+                    test_days=args.test_days, test_end=args.test_end,
                 ).to_string(index=False)
             )
 

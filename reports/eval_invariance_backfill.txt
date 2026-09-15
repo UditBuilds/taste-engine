@@ -1,3 +1,5 @@
+Claim supported: the backfill rework (floor + computed length + genre guard + distance ranking + ceiling) does not move rediscovery nDCG. Not about window pinning — see reports/eval_invariance_window.txt for that claim.
+
 taste-engine invariance re-check — briefs/limit_and_invariance.md, Part 2
 commit: 58799f7a498fcc29363270bdafa460981417a782
 run (UTC): 2026-09-14 16:34:09

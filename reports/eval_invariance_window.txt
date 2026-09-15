@@ -1,0 +1,44 @@
+Claim supported: the replay evaluation window is pinned by --test-end to an absolute, database-state-independent bound and is reproducible (byte-identical across two separate processes) on this dataset snapshot. Not about backfill — see reports/eval_invariance_backfill.txt for that claim.
+
+taste-engine window pin — briefs/pin_evaluation.md, Part 2
+commit: ce7694696e70194522b3207b9dc5d0aa8d5a5729 + uncommitted working-tree changes
+        (the --test-end flag itself; this session's brief prohibits git commit/push,
+        so it is not yet landed at a SHA - see the session report for what changed)
+run (UTC): 2026-09-15 05:48
+command: bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 --test-end 2026-07-01 -k 50 --half-life 14
+
+Purpose: pin README §2's replay-evaluation window to an absolute end date
+(--test-end) instead of a relative --test-days offset. --test-days counts from
+--split forward by N days via pure date arithmetic - it never reads now() - so
+the window itself was never calendar-dependent; what drifts is which rows in
+data/taste.db fall inside [--split, --test-end) as the database grows. Pinning
+the bound explicitly makes that assumption self-documenting and immune to a
+future change to --split's default; it does not make the figures below
+reproducible against a different database - a different taste.db will produce
+different numbers from this identical command.
+
+Confirmed byte-identical: the command above was run twice, as two separate
+Python processes, and diffed - empty diff. (Also true of the equivalent
+--test-days 30 form on the current, unmodified evaluation code, checked first
+as a pre-implementation risk probe, since this path runs HDBSCAN clustering
+and this repo has a recorded case of hash-seed-dependent nondeterminism
+elsewhere - writer._modal_genre. Neither run showed it.)
+
+Full output below is verbatim and unedited.
+
+========================================================================
+
+Temporal hold-out  train < 2026-06-01 <= test (to 2026-07-01)
+  half-life               14 days
+  train tracks         2,066 (5,465 plays)
+  test tracks            867 (1,613 plays)
+  seen in train          390 (cold start: 477)
+  ceiling@50          100.0%
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+cluster_diverse    27          0.54   0.3213       NaN
+        recency    22          0.44   0.3088    0.2620
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).

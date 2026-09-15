@@ -7,7 +7,15 @@ anything at all.
 import pandas as pd
 import pytest
 
-from taste_engine.evaluate import ndcg_at_k, precision_at_k, split_frames
+from taste_engine.evaluate import (
+    _window_end,
+    evaluate,
+    main,
+    ndcg_at_k,
+    precision_at_k,
+    split_frames,
+    sweep,
+)
 from taste_engine.recommend import STRATEGIES, by_cluster_diverse, recommend
 
 SPLIT = "2026-06-01"
@@ -137,6 +145,79 @@ class TestNoLeakage:
     def test_windows_do_not_overlap(self, db):
         train, test = split_frames(db, SPLIT, cluster=False)
         assert train["last_played"].max() < SPLIT <= test["first_played"].min()
+
+
+class TestWindowEnd:
+    """--test-end pins an absolute window bound - briefs/pin_evaluation.md."""
+
+    def test_test_end_is_returned_verbatim(self):
+        assert _window_end("2026-06-01", None, "2026-07-01") == "2026-07-01"
+
+    def test_test_days_arithmetic_is_unchanged(self):
+        assert _window_end("2026-06-01", 30, None) == "2026-07-01"
+
+    def test_neither_bound_is_open_ended(self):
+        assert _window_end("2026-06-01", None, None) is None
+
+    def test_both_bounds_together_is_refused(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            _window_end("2026-06-01", 30, "2026-07-01")
+
+
+class TestTestEnd:
+    """test_end must produce the identical window test_days already computes
+    for the same span, and thread cleanly through the single-split callers."""
+
+    def test_test_end_matches_equivalent_test_days(self, db):
+        by_days = evaluate(db, split_date="2026-06-01", test_days=30)
+        by_end = evaluate(db, split_date="2026-06-01", test_end="2026-07-01")
+        assert by_days["test_tracks"] == by_end["test_tracks"]
+        assert by_days["test_plays"] == by_end["test_plays"]
+        assert by_days["train_tracks"] == by_end["train_tracks"]
+        pd.testing.assert_frame_equal(
+            by_days["results"].reset_index(drop=True),
+            by_end["results"].reset_index(drop=True),
+        )
+
+    def test_report_records_test_end_not_a_recomputed_test_days(self, db):
+        report = evaluate(db, split_date="2026-06-01", test_end="2026-07-01")
+        assert report["test_end"] == "2026-07-01"
+        assert report["test_days"] is None
+
+    def test_sweep_accepts_test_end(self, db):
+        result = sweep(db, split_date="2026-06-01", test_end="2026-07-01", half_lives=[14])
+        assert len(result) == 1
+
+
+class TestTestEndCLI:
+    """The multi-split flags (--rediscovery/--both/--sweep-splits/--robustness)
+    each sweep their own hardcoded split list; an absolute --test-end would
+    apply a different, inconsistent window to every one of them, so the CLI
+    refuses the combination outright rather than silently misapplying it.
+    --sweep-half-life is deliberately not in that list: it holds --split
+    fixed and only varies half-life, so it stays coherent with --test-end.
+    """
+
+    def test_test_days_and_test_end_together_is_refused(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["--test-days", "30", "--test-end", "2026-07-01"])
+        assert exc.value.code == 2
+        assert "not allowed with argument --test-days" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "flag", ["--rediscovery", "--both", "--sweep-splits", "--robustness"]
+    )
+    def test_test_end_with_a_multi_split_flag_is_refused(self, flag, capsys):
+        with pytest.raises(SystemExit) as exc:
+            main(["--test-end", "2026-07-01", flag])
+        assert exc.value.code == 2
+        assert "cannot be applied across" in capsys.readouterr().err
+
+    def test_test_end_alone_is_allowed(self, db, capsys):
+        """`db` is requested only to skip cleanly without data/taste.db; main()
+        opens its own connection via config.DB_PATH, the same database."""
+        assert main(["--test-end", "2026-07-01"]) == 0
+        assert "to 2026-07-01" in capsys.readouterr().out
 
 
 def _non_music_plays(db, end):

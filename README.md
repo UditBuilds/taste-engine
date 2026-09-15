@@ -368,15 +368,30 @@ specified — precision@20 over the remaining 105 days — **every strategy scor
 1.00**; a track played 50 times in nine months is certain to recur in the next
 three. On the graded version of that window the baseline *wins*.
 
-Bounded to 30 days at k=50, on canonical songs:
+Bounded to `[2026-06-01, 2026-07-01)` at k=50, on canonical songs — pinned to
+an absolute window end (`--test-end`) rather than a relative day count, so the
+boundary no longer depends on when the command runs:
+
+```bash
+bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 --test-end 2026-07-01 -k 50 --half-life 14
+```
 
 | strategy | nDCG@50 | Spearman |
 |---|---:|---:|
-| **score** | **0.551** | 0.371 |
-| most_played *(baseline)* | 0.539 | **0.440** |
+| **score** | **0.551** | 0.358 |
+| most_played *(baseline)* | 0.542 | **0.430** |
 
-A +2.2% edge on the task where naming the favourites is nearly optimal — which
+A +1.6% edge on the task where naming the favourites is nearly optimal — which
 is exactly why it is not the headline.
+
+Measured on a dataset snapshot dated 2026-09-15: 2,066 training tracks (5,465
+plays) and 867 test tracks (1,613 plays) inside that window — window-scoped
+counts, not the whole-catalogue canonical-song count in §3. The bounds above
+are now fixed; the rows inside them are not. This is the command that
+produced these figures, not a guarantee that any other `taste.db` —
+including this same repo's, run later — reproduces the same numbers. Full
+output, run twice as separate processes and confirmed byte-identical:
+`reports/eval_invariance_window.txt`.
 
 ### Results that do not flatter the model
 
