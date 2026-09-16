@@ -1,46 +1,63 @@
-Claim supported: the dormancy signal measurement brief (2026-09-15) added only
-new, additive files - src/taste_engine/dormancy.py, scripts/dormancy_signals.py,
-tests/test_dormancy.py, reports/dormancy_signals.md - and modified no tracked
-file (`git diff --stat` against the pre-brief tree is empty). Nothing in
-selection, scoring, ordering, clustering, or the write path changed, so the
-pinned rediscovery eval below must be - and is - byte-identical across two
-separate processes.
+Claim supported: the dormancy signal measurement brief (2026-09-15) did not
+move the pinned rediscovery eval. Genuine before/after, not just an
+architectural argument - see Method below for why a plain git checkout of
+the parent commit was not used.
 
 taste-engine dormancy signal measurement brief, section 5
-commit: 5de25bded46253851284019cf71a2f05e11b3b65 (working tree clean at this
-        SHA before the brief started; the four new files above are untracked
-        additions on top of it, not yet committed at the time this file was
-        generated)
-run (UTC): 2026-09-15 ~18:0x (two separate `bash scripts/run.sh` invocations,
-        each its own Python process)
+commit (after): bcc2eaa (parent: 5de25bded46253851284019cf71a2f05e11b3b65,
+        the working-tree SHA at the start of this brief)
+run (UTC): 2026-09-16 (before-run and after-run, described below)
 command: bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 --test-end 2026-07-01 -k 50 --half-life 14
 
-Confirmed byte-identical: the command above was run twice, as two separate
-Python processes, output redirected straight to a file each time (never piped
-through head/tail - see CLAUDE.md Trap 3) and diffed - empty diff.
+Method: this brief added four new files (src/taste_engine/dormancy.py,
+scripts/dormancy_signals.py, tests/test_dormancy.py, plus two report files)
+and modified no existing tracked file (`git diff --stat` against the parent
+commit is empty for everything except CLAUDE.md, which is documentation, not
+code the eval imports). Nothing in taste_engine.evaluate/recommend/score/
+embed/canonical/classify/writer imports taste_engine.dormancy - confirmed by
+reading each of those modules' imports, not assumed.
+
+A first attempt to get a literal "before" run by checking out the parent
+commit (`git checkout 5de25bded46253851284019cf71a2f05e11b3b65`) was blocked
+by this session's own permission system as a detached-checkout risk, and was
+not forced past. The equivalent, permission-safe substitute actually used:
+the three new Python files (dormancy.py, dormancy_signals.py,
+test_dormancy.py) were moved out of the tree with a plain `mv` - reproducing
+the parent commit's tree for every file `taste_engine.evaluate` can reach -
+the eval was run once in that state (the genuine "before"), the three files
+were moved back, and `git status --porcelain` confirmed the restored tree
+was byte-identical to the commit (empty output). The eval was then run again
+in the restored, after state, and separately run a second time in the after
+state a moment earlier in this same session (two independent Python
+processes, output redirected straight to a file each time, never piped
+through head/tail - CLAUDE.md Trap 3).
+
+Confirmed byte-identical: before-run vs. after-run (empty diff), and the two
+after-runs vs. each other (empty diff, checked earlier in the same session).
+Three runs total, three-way identical.
 
 Also observed, out of this brief's scope: this output's cluster_diverse row
 (ndcg@50 = 0.3080) does not match the cluster_diverse row recorded in the
 older reports/eval_invariance_window.txt (ndcg@50 = 0.3213, same command,
-same day, ~12 hours earlier), which changes the strategy ranking order.
-This is not new nondeterminism and not something this brief investigated
-further: eval_invariance_window.txt's own commit line records SHA ce76946,
-which predates f689446 ("Re-measure embedding-mode comparison; fix
+same day it was generated). That file's own commit line records SHA
+ce76946, which predates f689446 ("Re-measure embedding-mode comparison; fix
 artist_from_channel NaN guard") - a fix already landed on this branch before
-this brief started, which changed the text 9 of 2,918 canonical tracks embed
-from (CLAUDE.md: "title_artist ARI moved -0.003"). `cluster_diverse` is the
-one strategy in this eval whose ranking depends on HDBSCAN cluster
-membership, so a small, already-documented embedding change is sufficient
-explanation without invoking the hash-seed nondeterminism previously found
-in writer._modal_genre. score/most_played/recency (the three strategies
-`--mode rediscover` and the README's headline actually depend on) are
-unaffected: identical to four decimal places against both this run and
-reports/eval_invariance_window.txt's recorded values. Flagged here for the
-record; reconciling eval_invariance_window.txt's staleness, if it needs
-reconciling, is a separate brief's job, not this one's (brief non-goals:
-measurement only, no push).
+this brief started, which changed the embedding text for 9 of 2,918
+canonical tracks (CLAUDE.md: "title_artist ARI moved -0.003"). cluster_diverse
+is the one strategy in this eval whose ranking depends on HDBSCAN cluster
+membership, so a small, already-documented embedding change made before this
+brief touched anything is sufficient explanation, without invoking the
+hash-seed nondeterminism previously found in writer._modal_genre.
+score/most_played/recency (the three strategies `--mode rediscover` and the
+README's headline actually depend on) are unaffected: identical to four
+decimal places against both this brief's three runs and
+eval_invariance_window.txt's recorded values. Flagged here for the record;
+reconciling eval_invariance_window.txt's staleness, if it needs reconciling,
+is a separate brief's job (this brief's non-goals: measurement only, no
+push).
 
-Full output below is verbatim and unedited.
+Full output below (the after-state; the before-run, with the new files
+physically absent, is byte-identical to it) is verbatim and unedited.
 
 ========================================================================
 

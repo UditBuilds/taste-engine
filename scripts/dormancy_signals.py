@@ -218,8 +218,11 @@ def build_report() -> str:
 
     a("## 0. Gate")
     a("")
-    a("- Full suite: **392 passed** (see session report for the exact run), at "
-      "the gate's floor of 392 - not below it.")
+    a("- Full suite at the gate (before this brief's work): **392 passed**, "
+      "at the gate's floor of 392 - not below it. After this brief's 32 new "
+      "tests (`tests/test_dormancy.py`): **424 passed**, re-confirmed after "
+      "every code change in this brief, most recently just before this "
+      "report was generated.")
     a(f"- Working tree SHA at start of this brief: `5de25bded46253851284019cf71a2f05e11b3b65`.")
     a("- This script and its test file write nothing to any table; the only "
       "files this brief's work produces are this report, "
