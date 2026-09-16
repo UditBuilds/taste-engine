@@ -59,7 +59,11 @@ RE_CAMEL = re.compile(r"(?<=[a-z])(?=[A-Z])")
 
 def normalise_title(title: str | None) -> str:
     """Strip release furniture: '(Official Video)', '[Audio]', '(feat. X)'."""
-    if not title:
+    # NaN is truthy, so `if not title` alone lets a float NaN through to
+    # str(title) -> the literal string "nan". Same class of bug as
+    # artist_from_channel's and canonical.canonical_key's - matched here
+    # rather than a second idiom. See reports/normalise_title_fix.md.
+    if not title or title != title:
         return ""
     text = RE_NOISE.sub(" ", str(title))
     text = text.replace("|", " ").strip(" -–—·|")
@@ -98,7 +102,12 @@ def strip_artist_from_title(title: str, artist: str) -> str:
     Dropping the channel is not enough: most titles are written
     'Travis Scott - MY EYES', so the artist survives inside the title itself.
     """
-    if not artist or not title:
+    # Same NaN guard as normalise_title/artist_from_channel, defensive here:
+    # both call sites already pass a normalise_title()-cleaned string, so a
+    # raw NaN title has never reached this function in practice - but the
+    # type hint promises `str`, and a future direct caller would otherwise
+    # hit AttributeError on title.lower() below rather than an empty string.
+    if not artist or not title or title != title:
         return title
     lowered, prefix = title.lower(), artist.lower()
     if lowered.startswith(prefix):

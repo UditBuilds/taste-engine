@@ -292,12 +292,27 @@ class TestAgainstRealDatabase:
 
     def test_qualifying_clusters_includes_the_three_labelled_ones(self, db):
         """Documents today's measured state (data is static/gitignored, so
-        this pins a fact rather than asserting a general property) - Joji
-        (cluster 4), Lil Baby/Lil Peep/Chris Brown (35) and T-Series (11)
-        must all clear FLOOR, since all three already shipped a live
-        playlist under this exact rule.
+        this pins a fact rather than asserting a general property) - Joji,
+        Lil Baby/Lil Peep/Chris Brown and T-Series must all clear FLOOR,
+        since all three already shipped a live playlist under this exact
+        rule.
+
+        Resolved by name, not a hardcoded cluster id: cluster ids are
+        reassigned whenever the input set changes (CLAUDE.md - "Cluster ids
+        are not identifiers"), the same idiom `dormancy_probe.find_cluster`
+        and `writer.plan`'s `--cluster-name` matching already use. This
+        test originally pinned ids 4/11/35 directly and broke - not
+        flakily, but deterministically - the moment `embed.py`'s
+        `normalise_title` NaN guard changed `title_artist` mode's
+        clustering (38 -> 37 clusters); the three artists' clusters still
+        qualify, just under different ids (5/12/36) - see
+        reports/normalise_title_fix.md.
         """
         as_of = pd.Timestamp.now(tz="UTC")
         _, frame_excl, _ = d.build_frames(db, as_of=as_of)
-        qualifying = set(d.qualifying_clusters(frame_excl)["cluster"])
-        assert {4, 11, 35} <= qualifying
+        qualifying = d.qualifying_clusters(frame_excl)
+        names = qualifying["name"].fillna("")
+        for artist in ("Joji", "T-Series", "Lil Baby"):
+            assert names.str.contains(artist, case=False, regex=False).any(), (
+                f"no qualifying cluster matched {artist!r}: {sorted(names)}"
+            )

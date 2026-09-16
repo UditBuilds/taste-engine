@@ -10,6 +10,7 @@ from taste_engine.embed import (
     name_cluster,
     normalise_title,
     reduce_dims,
+    strip_artist_from_title,
 )
 
 
@@ -35,18 +36,16 @@ class TestTitleNormalisation:
         assert normalise_title(None) == ""
         assert normalise_title("") == ""
 
-    def test_nan_title_is_a_known_unfixed_gap(self):
-        """Documents current behaviour, not desired behaviour.
-
-        `float('nan')` is truthy in Python, so `if not title` lets it
-        through to `str(title)` -> the literal string 'nan'. Same class of
-        bug as artist_from_channel's (see TestArtistRecovery), but fixing
-        it is out of scope for the brief that added this test - see
-        reports/embedding_modes_remeasured.md. If normalise_title is ever
-        given the same guard, this assertion should start failing and needs
-        updating to `== ""`, not silently deleting.
+    def test_handles_nan_title(self):
+        """Regression: pandas stores a missing title as float('nan'), which
+        is truthy in plain Python (`not float('nan')` is False), so the
+        pre-fix code fell through to `str(nan)` -> the literal string 'nan'.
+        Same class of bug as artist_from_channel's (see TestArtistRecovery)
+        and canonical.canonical_key's - fixed the same way here. 7 of 2,918
+        canonical tracks had a NaN title (and, for all 7, also a NaN
+        channel) - see reports/normalise_title_fix.md.
         """
-        assert normalise_title(float("nan")) == "nan"
+        assert normalise_title(float("nan")) == ""
 
 
 class TestArtistRecovery:
@@ -78,6 +77,49 @@ class TestArtistRecovery:
         assert artist_from_channel(float("nan")) == ""
 
 
+class TestStripArtistFromTitle:
+    def test_strips_a_matching_prefix(self):
+        assert strip_artist_from_title("Don Toliver - TORE UP", "Don Toliver") == "TORE UP"
+
+    def test_leaves_a_non_matching_title_unchanged(self):
+        assert strip_artist_from_title("Some Other Title", "Don Toliver") == "Some Other Title"
+
+    def test_handles_missing_artist(self):
+        assert strip_artist_from_title("Some Title", "") == "Some Title"
+
+    def test_handles_nan_title(self):
+        """Regression: same NaN-truthiness class as normalise_title's,
+        fixed the same way, defensively - both real call sites
+        (embed.build_corpus, canonical.canonical_key) already pass a
+        normalise_title()-cleaned string, so a raw NaN title has never
+        reached this function in practice. Without the guard, `title.lower()`
+        raises AttributeError on a float - see reports/normalise_title_fix.md.
+        The function's existing contract for unusable input is to return
+        `title` unchanged (see test_handles_missing_artist above), so a NaN
+        title comes back as that same NaN, not "" - `!=` self is how NaN
+        equality actually works, so this checks that rather than `==`.
+        """
+        result = strip_artist_from_title(float("nan"), "Don Toliver")
+        assert result != result
+
+    def test_handles_nan_title_and_missing_artist(self):
+        result = strip_artist_from_title(float("nan"), "")
+        assert result != result
+
+    def test_does_not_guard_a_nan_artist(self):
+        """Documents a real, separate gap found while verifying this fix,
+        deliberately NOT closed here: this brief's guard matches
+        normalise_title's pattern - the *title* side only (see its
+        docstring). A NaN *artist* still reaches `artist.lower()`
+        unguarded and raises AttributeError. Unreachable via either real
+        call site today - both always pass artist_from_channel's output,
+        which is never NaN - so this is reported, not fixed. See
+        reports/normalise_title_fix.md and reports/defect_audit.md.
+        """
+        with pytest.raises(AttributeError):
+            strip_artist_from_title("Some Title", float("nan"))
+
+
 class TestCorpus:
     def test_appends_the_artist_when_the_title_lacks_it(self):
         df = pd.DataFrame({"title": ["TORE UP"], "channel": ["Don Toliver - Topic"]})
@@ -104,22 +146,32 @@ class TestCorpus:
         df = pd.DataFrame({"title": ["Some Song"], "channel": [float("nan")]})
         assert build_corpus(df) == ["Some Song"]
 
-    def test_nan_title_still_becomes_the_literal_string_nan(self):
-        """Known, unfixed gap (normalise_title, not artist_from_channel) -
-        a real channel does not rescue a NaN title. See
-        TestTitleNormalisation.test_nan_title_is_a_known_unfixed_gap and
-        reports/embedding_modes_remeasured.md."""
+    def test_nan_title_no_longer_becomes_the_literal_string_nan(self):
+        """Fixed: a real channel now rescues a NaN title. Previously this
+        was 'nan - Don Toliver' - the bogus 'nan' prefix normalise_title's
+        pre-fix behaviour produced. See reports/normalise_title_fix.md."""
         df = pd.DataFrame({"title": [float("nan")], "channel": ["Don Toliver - Topic"]})
-        assert build_corpus(df) == ["nan - Don Toliver"]
+        assert build_corpus(df) == ["Don Toliver"]
 
-    def test_nan_title_and_nan_channel_both_stay_fully_degenerate(self):
-        """The combined case the fix does NOT resolve: 7 of the 9 affected
-        canonical tracks have both a NaN title and a NaN channel, and all
-        seven still embed as the identical literal string 'nan' after the
-        artist_from_channel fix - measured, not assumed, in
-        reports/embedding_modes_remeasured.md."""
+    def test_nan_title_no_longer_becomes_nan_in_title_mode(self):
+        """Unlike the artist_from_channel fix, this one changes `title` and
+        `title_genre` mode text too, not just `title_artist` - both modes
+        derive from normalise_title's own output, not just the channel side.
+        See reports/normalise_title_fix.md."""
+        df = pd.DataFrame({"title": [float("nan")], "channel": ["Don Toliver - Topic"]})
+        assert build_corpus(df, mode="title") == [""]
+        assert build_corpus(df, mode="title_genre") == [""]
+
+    def test_nan_title_and_nan_channel_both_now_resolve_to_empty(self):
+        """The combined case: 7 of 2,918 canonical tracks have both a NaN
+        title and a NaN channel. Before this fix all seven embedded as the
+        literal string 'nan' even after the artist_from_channel fix alone
+        (that fix could not rescue them - normalise_title's own NaN gap
+        dominated); now both sides resolve to "" and the corpus text is a
+        genuinely empty string rather than a fabricated word. See
+        reports/normalise_title_fix.md."""
         df = pd.DataFrame({"title": [float("nan")], "channel": [float("nan")]})
-        assert build_corpus(df) == ["nan"]
+        assert build_corpus(df) == [""]
 
 
 class TestDimensionReduction:
