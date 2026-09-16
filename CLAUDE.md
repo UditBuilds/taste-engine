@@ -211,6 +211,26 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
   (see Known open items #6 and the Decisions table above) — found while
   cross-checking Last.fm's numbers against the clustering ARI, fixed in a
   separate, later brief.
+- **Accumulated defect fixes (2026-09-16), strictly sequential: Part A
+  alone, measured and committed, before Part B started.** Part A:
+  `embed.normalise_title`'s NaN guard — the same bug class as
+  `artist_from_channel` (`f689446`), in a function whose output feeds
+  `title_artist`/`title`/`title_genre` corpus text directly, so all three
+  modes' ARI moved this time, not just one (open item 6, updated above;
+  full before/after `reports/normalise_title_fix.md`). Landed alongside a
+  same-commit fix to `tests/test_dormancy.py`'s hardcoded cluster ids,
+  which Part A's own reclustering broke (open item 9). Part B, four
+  independent fixes, four commits: `dormancy_signals.py`'s `_md_table`
+  integer-upcast (cosmetic, no report regenerated — confirmed nothing in
+  it renders wrong); `genre_coverage.py`'s `_modal()` hash-seed tie-break
+  (16 of 37 real clusters had an exact vote tie — not a two-track edge
+  case; `reports/genre_coverage.md` regeneration blocked by open item 9's
+  stale gate, not by this fix); `taste-engine status` / `status --verify`
+  (`writer.status_rows`, reusing `writer.verify()` unmodified — closes
+  open item 7's observability gap; caught and fixed its own NaN-truthiness
+  bug live, against the real database, while building it); a defect audit
+  (open item 8). 467 tests passing as of the `status` commit; final count
+  in that brief's own session report.
 
 ### Known open items
 
@@ -247,12 +267,30 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
    table's 0.627) — full three-mode re-measurement, an
    `embed.artist_from_channel` NaN-guard fix (9/2,918 tracks, `title_artist`
    ARI moved −0.003; `title`/`title_genre` unaffected), and the delta:
-   `reports/embedding_modes_remeasured.md`. Current: `title_artist` 0.649 vs
-   `title_genre` 0.470 vs `title` 0.383 — same winner, margin narrowed ~21%.
-   **README's table is now current; item 4's split table is not** — this
-   fixed one stale table, not the pattern. A general guard against a third
-   instance is out of scope for the brief that did this and gets its own.
-7. **A completed write can be invisible.** (2026-09-15) A `--commit` write
+   `reports/embedding_modes_remeasured.md`. Current (at that point):
+   `title_artist` 0.649 vs `title_genre` 0.470 vs `title` 0.383 — same
+   winner, margin narrowed ~21%. **README's table is now current; item 4's
+   split table is not** — this fixed one stale table, not the pattern. A
+   general guard against a third instance is out of scope for the brief
+   that did this and gets its own — see item 9.
+
+   **Stale again as of 2026-09-16.** `embed.normalise_title`'s own
+   NaN-guard fix (same bug class, a different function - no Decisions
+   table entry, since it's a bugfix rather than a tunable) moved
+   `title_artist` 0.649→0.665, `title` 0.383→0.371, `title_genre`
+   0.470→0.366: same winner, but `title` and `title_genre` swap 2nd/3rd on
+   ARI itself this time, not just on a secondary metric.
+   `reports/normalise_title_fix.md` has the full before/after. Deliberately
+   **not** folded into this item or README's table by the commit that
+   measured it — that commit is scoped to `embed.py` + tests + its own
+   report, and whether to update the public-facing numbers now or on the
+   next brief that touches this table is Udit's call, not a bugfix
+   commit's to make unilaterally. This is now the *second* time this exact
+   table has gone stale from an unrelated fix — the pattern this item's
+   own text already called out as "out of scope... gets its own" is now
+   two-for-two; still not built (see item 9).
+7. **A completed write can be invisible — the observability gap is now
+   closed, the root cause is not.** (2026-09-15) A `--commit` write
    completed successfully — it produced the Lil Baby/Lil Peep/Chris Brown and
    T-Series playlists the dormancy-signal measurement brief is grounded in,
    `written_playlists` rows 6 and 7 — but printed no confirmation block: no
@@ -261,9 +299,56 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
    written` (`writer.list_written`) can confirm a row after the fact, but
    nothing detects a write that finished without printing its report or
    prompts a user to go check — quota arithmetic was the only signal that
-   caught this one. A `--status`/`--verify` path that runs automatically (or
-   at least a warning) when `execute_write`'s report goes unprinted would
-   close the gap. Logged only, not fixed — out of that brief's scope.
+   caught this one.
+
+   **2026-09-16: `taste-engine status`** (local read of every
+   `written_playlists` row, zero quota — `writer.status_rows()`) **and
+   `status --verify ROW`** (+1 unit, calls `playlistItems.list` via
+   `writer.verify()`, unmodified) now answer "did that write actually
+   happen?" without quota arithmetic. What still isn't known: *why*
+   `execute_write`'s report went unprinted that one time — deliberately
+   not investigated by the brief that added `status` ("B3 adds
+   observation only").
+8. **Two more instances of the NaN-truthiness / hash-seed-tie-break bug
+   families, found and deliberately left unfixed.** (2026-09-16) A
+   full-repo audit after this session's other fixes: `redact.alias()`'s
+   `if name is None` doesn't catch a float NaN (reachable via
+   `redact_series()` → `scripts/build_notebook.py`; mild consequence —
+   falls to the existing "unknown name" fallback rather than a fabricated
+   label); `embed.strip_artist_from_title`'s `artist` parameter (not
+   `title`, which this session did fix) still crashes on a NaN artist,
+   unreachable via any real call site today; `scripts/genre_coverage.py`'s
+   module-level `label_counts` (the "Top 15 genre labels" table) has the
+   identical `Counter.update(set(...))` hash-seed-dependent tie-break this
+   session fixed in that file's `_modal()`, as a separate, untouched
+   `Counter`. Full inventory, including what was checked and ruled out:
+   `reports/defect_audit.md`.
+9. **A clustering change breaks any hardcoded assumption downstream of
+   it, and this happened three ways from one fix in one session.**
+   (2026-09-16) `embed.normalise_title`'s NaN fix (item 6, above) changed
+   `title_artist` mode's clustering (38→37 clusters) as a side effect of
+   fixing unrelated text. Three things downstream broke or went stale as a
+   result: (1) `tests/test_dormancy.py` hardcoded cluster ids `{4, 11,
+   35}` for Joji/T-Series/Lil Baby — fixed in the same commit as the fix
+   that broke it, resolved by name instead, the same idiom `--cluster-name`
+   already uses; (2) `reports/dormancy_signals.md`'s prose ("cluster 4, 35
+   and 11 respectively") is now stale and was **not** corrected — it's a
+   frozen, `as_of`-pinned report, not code; (3)
+   `scripts/genre_coverage.py`'s `EXPECTED_REDISCOVER_CLUSTER_SIZE` gate
+   (492/84, commented "time-invariant" — true against score/`as_of` drift,
+   false against a clustering *code* change) now hard-fails and blocks
+   that script from running at all. Cross-checked against
+   `scripts/backfill_report.py`'s independently-computed eligible counts
+   (20/18 either way) to confirm the gate's constants are simply stale,
+   not a pipeline bug — but **not updated**: it is a hardcoded rule, not a
+   bug, and "don't change a rule unilaterally" applies same as anywhere
+   else in this file. `reports/genre_coverage.md` is therefore stale for
+   two compounding, independent reasons (this, plus item 8's now-fixed
+   `_modal()` tie-break) and its "29 of 37 shallow clusters reach 45...
+   viable: yes" verdict should not be trusted until Udit decides on the
+   gate and it's regenerated. No general staleness guard was built —
+   considered and explicitly deferred to its own future brief, same as
+   item 6 already flagged before this made it two-for-two.
 
 ## Repo shape
 

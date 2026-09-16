@@ -1,0 +1,81 @@
+Claim: Part B (B1-B4 of "accumulated defect fixes") moved nothing in the
+pinned evaluation. Part A (the normalise_title NaN fix, committed first and
+separately - reports/normalise_title_fix.md) is not re-argued here; this
+file only checks that nothing AFTER Part A moved anything further. All four
+B-fixes were cosmetic/observational by design: a markdown-table renderer
+(B1), a tie-break inside a script not read by scoring/clustering/selection
+(B2), a new read-only CLI command that touches no write-path code (B3), and
+an audit that fixed nothing (B4).
+
+taste-engine pinned eval - reports/eval_invariance_defects.txt
+before (reference): Part A's own post-fix snapshot, committed at 029319e,
+  full table in reports/normalise_title_fix.md Part 3 (Command A and
+  Command B, both run twice there too, byte-identical each time).
+after: HEAD at ccd1046 (B3) + this brief's B4 commit (audit + CLAUDE.md
+  only, no code) - i.e. every code change in Part B applied.
+run (UTC): 2026-09-16, twice each command, this session.
+
+Same two commands as Part A's own invariance check (same reasoning:
+--test-end and --rediscovery/--both are mutually exclusive in
+evaluate.py's argparse, so Command A alone cannot exercise
+cluster_diverse's rediscovery path):
+
+  A. bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 \
+       --test-end 2026-07-01 -k 50 --half-life 14
+
+  B. bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 \
+       --test-days 30 -k 50 --half-life 14 --both
+
+Determinism checked both ways: two independent processes per command
+today (RUN 1 / RUN 2 below), and compared against Part A's own two-process
+determinism check at commit 029319e.
+
+RESULTS
+
+Command A (replay, --test-end 2026-07-01) - RUN 1 and RUN 2 today,
+byte-identical to each other and to Part A's post-fix snapshot:
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+cluster_diverse    25          0.50   0.3360       NaN
+        recency    22          0.44   0.3088    0.2620
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).
+
+Command B (rediscovery, single split + across-4-splits summary, plus the
+same replay at 30d) - RUN 1 and RUN 2 today, byte-identical to each other
+and to Part A's post-fix snapshot:
+
+Rediscovery, single split (train < 2026-06-01 <= test, top-50 excluded):
+       strategy  hits  recall@20  precision@20  ndcg@20
+        recency    12     0.0335           0.6   0.3299
+          score    14     0.0391           0.7   0.2227
+cluster_diverse    12     0.0335           0.6   0.1748
+    most_played    10     0.0279           0.5   0.1354
+
+  Best on ndcg@20: recency at 0.330 vs 0.135 baseline (+143.6%).
+
+Rediscovery across splits:
+       strategy  mean_ndcg@20  mean_recall@20  beats_baseline  splits
+          score        0.3776          0.0576               4       4
+    most_played        0.2500          0.0441               0       4
+        recency        0.2304          0.0432               2       4
+cluster_diverse        0.2281          0.0505               2       4
+
+Replay (30d, same window as Command A):
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+cluster_diverse    25          0.50   0.3360       NaN
+        recency    22          0.44   0.3088    0.2620
+
+CONCLUSION
+
+Every number above, in every table, in both commands, matches Part A's
+post-fix snapshot exactly - including cluster_diverse, the one strategy
+that reads clustering output and therefore the one most likely to have
+moved if any of B1-B4 had touched selection, scoring, or clustering code.
+None of the four B-fixes moved anything measurable. Confirms the brief's
+own framing: Part B was cosmetic/observational by construction, and this
+is now measured, not assumed.
