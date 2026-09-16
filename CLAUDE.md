@@ -152,8 +152,9 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
 
 ## State
 
-- 392 tests pass. Phases 1–4 built; Phase 5 (Last.fm tag coverage
-  measurement, table-only) added 2026-09-15.
+- 424 tests pass. Phases 1–4 built; Phase 5 (Last.fm tag coverage
+  measurement, table-only; dormancy signal measurement, table-only) added
+  2026-09-15.
 - Takeout parsed; all 30,440 videos resolved (609 units spent, quota ledger has
   the record).
 - **Live write-back has now run.** The first `--commit` against the real
@@ -251,6 +252,18 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
    **README's table is now current; item 4's split table is not** — this
    fixed one stale table, not the pattern. A general guard against a third
    instance is out of scope for the brief that did this and gets its own.
+7. **A completed write can be invisible.** (2026-09-15) A `--commit` write
+   completed successfully — it produced the Lil Baby/Lil Peep/Chris Brown and
+   T-Series playlists the dormancy-signal measurement brief is grounded in,
+   `written_playlists` rows 6 and 7 — but printed no confirmation block: no
+   playlist URL, no row id, no verification line. It was only caught by
+   noticing the quota ledger had dropped by 1,102 units. `taste-engine
+   written` (`writer.list_written`) can confirm a row after the fact, but
+   nothing detects a write that finished without printing its report or
+   prompts a user to go check — quota arithmetic was the only signal that
+   caught this one. A `--status`/`--verify` path that runs automatically (or
+   at least a warning) when `execute_write`'s report goes unprinted would
+   close the gap. Logged only, not fixed — out of that brief's scope.
 
 ## Repo shape
 
@@ -274,6 +287,8 @@ src/taste_engine/
                   shallow cluster from its nearest neighbours, never below floor
   lastfm.py       Last.fm tag coverage measurement — client + matching; not
                   read by scoring/clustering/write-path (State, above)
+  dormancy.py     dormancy signal measurement — which signal predicts
+                  "forgotten"; not read by scoring/clustering/write-path
   cli.py          `taste-engine`
 ```
 
