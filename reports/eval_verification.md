@@ -125,7 +125,7 @@ split). The embedding-mode comparison has no temporal split to leak across.
 A2 is entirely about `evaluate.py`'s replay/rediscovery/nested hold-out, a
 separate measurement from the one A1 concerns. The external review's framing
 — that both findings jointly invalidate "the embedding-mode comparison" — is
-wrong about A2's half; see item 5 in the closing list below.
+wrong about A2's half: A2 has no bearing on that comparison at all.
 
 **Is this the same leak `f46dc24` fixed?** No. That commit's leak was a
 tie-break bug in `evaluate.py`/`recommend.py`'s hold-out *selection*
