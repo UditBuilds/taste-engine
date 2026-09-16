@@ -59,7 +59,20 @@ def _sha() -> str:
 def _md_table(df: pd.DataFrame) -> str:
     """Dumb renderer: every cell is already display-ready (caller rounds/
     casts before calling). Avoids adding a `tabulate` dependency for one
-    report script."""
+    report script.
+
+    Deliberately uses `to_dict("records")`, not `df.iterrows()`: iterrows()
+    builds each row as a pandas Series, which is homogeneously typed, so an
+    all-numeric row silently upcasts every int column to float64, rendering
+    "90" as "90.0". Same fix as scripts/dormancy_probe.py's `_md_table` -
+    every table this script renders happens to carry a string column
+    ("name"/"title"/"signal"), which forces object dtype and incidentally
+    hides the bug, so it was latent here rather than visible in any
+    generated report (confirmed: no all-numeric table exists in this
+    script's output today). `to_dict` preserves each column's own dtype per
+    cell with no such coercion, so this is defensive rather than a fix to
+    any rendered number.
+    """
     if df.empty:
         return "*(none)*"
     cols = list(df.columns)
@@ -67,12 +80,12 @@ def _md_table(df: pd.DataFrame) -> str:
         "| " + " | ".join(cols) + " |",
         "|" + "|".join(["---"] * len(cols)) + "|",
     ]
-    for _, row in df.iterrows():
+    for record in df.to_dict(orient="records"):
         # T-Series titles routinely carry literal "|" (pipe-delimited cast/
         # composer credits - see canonical.py's RE_PIPE) which would
         # otherwise fracture the table's column count.
         cells = [
-            "" if pd.isna(row[c]) else str(row[c]).replace("|", "\\|").replace("\n", " ")
+            "" if pd.isna(record[c]) else str(record[c]).replace("|", "\\|").replace("\n", " ")
             for c in cols
         ]
         lines.append("| " + " | ".join(cells) + " |")
