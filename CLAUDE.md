@@ -112,6 +112,7 @@ wrong number that looks fine.
 | **SUPERSEDED 2026-09-14** — shallow-cluster backfill by nearest **embedding centroid**, `MIN_SCORE = 0.5` floor | Fan-re-upload degradation was worse than a shorter, floor-respecting playlist. Not tuned to flatter: T-Series's backfill is musically incoherent (Joji, Playboi Carti, Doja Cat) and that's reported in README, not hidden. Replaced by depth-based length (`MIN_CLUSTER_NATIVE`/`MAX_BACKFILL_SHARE`) plus a genre guard on each backfill candidate — briefs/backfill_constraint.md. |
 | `BACKFILL_ENABLED = False` (2026-09-15) | Joji's first live dry run backfilled 3 Playboi Carti tracks + 1 Don Toliver track, admitted by genre `pop` at distance 0.55–0.70 — well inside the 1.0 ceiling, so no threshold fixes it. Both admission signals measure the wrong quantity: topicCategories tags `pop`/`hip hop` on most of the whole library (not discriminative), and the embedding space is title+artist text, not audio. FLOOR/LENGTH/GUARD/RANK/CEILING code is unchanged and unreached, not deleted. `--backfill` re-enables it for one run — briefs/backfill_toggle.md. |
 | Last.fm tags **not integrated** into scoring/clustering (2026-09-15) | Measurement-only precursor for a future decision brief: 640/2,918 canonical tracks (21.9%) matched directly, +118 (4.0%) via artist-name fallback; dominant failure is the track having zero tags on Last.fm, not a failed lookup. Not viable as a standalone per-track genre/mood signal. `lastfm.py`, `track_tags`/`track_tag_lookups` tables exist for possible future combination with other signals — nothing in scoring/clustering/write-path reads them. `reports/lastfm_coverage.md`. |
+| `evaluate.split_frames`'s **training** frame dates `in_playlist` via `playlist_as_of=split_date`; its **test** frame stays undated (2026-09-16) | An external review found `classify.py`'s `in_playlist` had no date condition at all, and it reaches row membership of the frame a temporal hold-out clusters, not just an `is_music` label. Confirmed, and fixed — `classify()`/`scored_tracks()` take an optional `playlist_as_of` cutoff, `None` everywhere except this one call site, so the live write path and every other caller is unaffected. Measured zero actual impact at the pinned split and all 9 nested-tuning splits before *and* after fixing it (stash/re-run/pop, byte-identical eval output) — no track's `is_music` currently depends on a post-split playlist add — but an undated global in a temporal hold-out is wrong regardless of today's data, so it was fixed anyway. `test` was deliberately left undated: it is ground truth of what was actually played, not training input, and no leak was found on that side. `reports/eval_verification.md`. |
 
 ### Cluster ids are not identifiers
 
@@ -231,6 +232,45 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
   bug live, against the real database, while building it); a defect audit
   (open item 8). 467 tests passing as of the `status` commit; final count
   in that brief's own session report.
+- **External review of the embedding-mode comparison: one finding confirmed
+  with teeth, one confirmed but inert, three smaller ones triaged
+  (2026-09-16).** Independent, read-only review with no project history;
+  verified before anything changed, per that brief's own Part A/Part B
+  split. **Confirmed, with real consequence:** `cluster_eval.coherence()`
+  excludes HDBSCAN noise before computing ARI/NMI/purity (line 68); the
+  three modes' ARI denominator ranges 42.9%-71.7% coverage of the same
+  438-track ground truth, and the published ranking on ARI specifically
+  (not NMI, not purity) is convention-dependent — `title_artist` beats
+  `title_genre` under "exclude" (current) and "singletons", but loses to it
+  under "noise as one cluster" (0.145 vs 0.185), because that convention's
+  penalty scales with the square of a mode's noise count and `title_artist`
+  carries the second-highest noise rate of the three. Not changed
+  unilaterally — `coherence()` keeps its default; `coherence_by_convention()`
+  is additive, backed by `scripts/noise_convention_report.py`, and the
+  choice of convention is explicitly left to Udit. **Confirmed, zero
+  impact:** `classify.py`'s `in_playlist` had no date condition (fixed, see
+  Decisions table); measured zero effect on `is_music`/corpus membership at
+  the pinned split and all 9 nested-tuning splits, both directions checked
+  (union-rescue and STRICT_MUSIC-filter-rescue), before and after the fix.
+  **Confirmed, not fixed (non-goals, see open item 10):** canonical
+  collapse silently drops 48 of 486 ground-truth music tracks from
+  `cluster_eval` (raw vs. canonical id mismatch); `redact.build_aliases`
+  can scramble existing pseudonym labels when a new, alphabetically-earlier
+  playlist name appears (mechanism confirmed, no evidence found that it has
+  fired on a published figure); `resolve.py` caches a `videos.list`
+  omission as permanently deleted with no retry path (matches the
+  already-published 2,307-not-found count, not an anomaly). **Refuted in
+  its specific consequence:** Last.fm's `error` status is cached exactly
+  like a success (real mechanism, `lastfm.py`), but zero of 3,784
+  `track_tag_lookups` rows currently carry that status, so the published
+  21.9% match-rate conclusion was not drawn on poisoned data, contrary to
+  what the review inferred. Also established the review's framing was
+  wrong on one point: the `in_playlist` leak has no bearing on the
+  embedding-mode comparison at all, since `cluster_eval.compare_modes`
+  never applies a temporal split. Full detail, all numbers, and the
+  reasoning behind each verdict: `reports/eval_verification.md`. 480 tests
+  passing (three commits: verify, then the noise-convention measurement,
+  then the `in_playlist` fix — no batching).
 
 ### Known open items
 
@@ -349,6 +389,46 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
    gate and it's regenerated. No general staleness guard was built —
    considered and explicitly deferred to its own future brief, same as
    item 6 already flagged before this made it two-for-two.
+10. **Which noise convention `coherence()` should use is now a live
+    decision, not settled.** (2026-09-16) `cluster_eval.coherence()`
+    excludes HDBSCAN noise before scoring ARI/NMI/purity — a defensible
+    convention, but the published `title_artist`-wins-on-ARI headline does
+    not survive it: under "noise as one cluster" `title_genre` wins ARI
+    instead (0.185 vs 0.145). NMI and purity favour `title_artist` under
+    every convention tried, and ARI itself still favours `title_artist`
+    under "exclude" and "singletons" — only the "one cluster" convention
+    flips it, and reports/eval_verification.md argues from ARI's own
+    pairwise definition that "one cluster" is the least defensible of the
+    three (its penalty scales with the *square* of a mode's noise count,
+    not with how wrong the model actually is). `coherence_by_convention()`
+    exists and is tested; `coherence()`'s default is untouched and the
+    README's table is untouched — both deliberately, pending Udit's choice
+    of convention. Once chosen, item 6's table (already stale for other
+    reasons) should be re-measured under it in the same pass, not a
+    separate one.
+11. **Three smaller findings from the same external review, confirmed and
+    deliberately left unfixed (non-goals of the brief that found them,
+    2026-09-16) — do not re-investigate, only re-open if the convention
+    changes underneath them.** `cluster_eval.py`'s ground truth holds raw
+    `playlist_tracks` video ids while the clustered frame holds canonical
+    ones; canonical collapse silently drops 48 of 486 ground-truth music
+    tracks whenever the raw id was not the surviving representative — the
+    438 quoted throughout item 10 and the README's ARI table is already
+    net of this, not a clean number. `redact.build_aliases` re-sorts its
+    *entire* input whenever any new playlist name appears, so a
+    new name that sorts before an existing one silently relabels
+    everything after it — mechanism confirmed with a worked example; no
+    evidence found that it has actually fired against a published figure
+    (current mapping is one clean, internally-consistent build over all 52
+    current names), but `data/playlist_aliases.json` is gitignored with no
+    history to audit further. `resolve.py`'s `pending_video_ids` caches a
+    `videos.list` response that omits a requested id as `found=0` forever,
+    with no retry path — real, but the current 2,307 such rows match the
+    original resolve run's already-published count exactly, not a growing
+    or anomalous number, and confirming any specific row as a false
+    negative would require spending API quota this brief did not spend.
+    `reports/eval_verification.md` (A3) has the full mechanism and numbers
+    for all three.
 
 ## Repo shape
 
