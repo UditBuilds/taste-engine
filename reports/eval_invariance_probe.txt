@@ -1,0 +1,66 @@
+Claim supported: the dormancy probe brief (2026-09-16) did not move the
+pinned rediscovery eval. Genuine before/after within this session, plus a
+cross-check against the recorded dormancy-brief snapshot per this brief's
+own section 7 instruction ("Compare against the dormancy snapshot, not the
+window one, and say which you used" - reports/eval_invariance_dormancy.txt
+is the one used below, not reports/eval_invariance_window.txt).
+
+taste-engine dormancy probe brief, section 7
+commit (before this brief's work): d852faa3c9d934d2d2ff710b0c2290bed2424da7
+        (the working-tree SHA at the start of this brief)
+run (UTC): 2026-09-16 (before-run and after-run, described below)
+command: bash scripts/run.sh -m taste_engine.evaluate --split 2026-06-01 --test-end 2026-07-01 -k 50 --half-life 14
+
+Method: this brief added three new files (scripts/dormancy_probe.py,
+tests/test_dormancy_probe.py, reports/dormancy_probe.md) and modified no
+existing tracked file - `git diff --stat -- src/` is empty (this brief's own
+gate: nothing under src/taste_engine/ changed at all, not even the new
+module the prior brief added). Nothing in taste_engine.evaluate/recommend/
+score/embed/canonical/classify/writer imports scripts.dormancy_probe -
+confirmed by reading each of those modules' imports, not assumed, and
+structurally impossible in any case since scripts/ is not an importable
+package.
+
+Following the prior brief's method (a plain `git checkout` of a specific
+commit was blocked by this session's permission system as a detached-
+checkout risk last time, and was not attempted again here): the two new
+Python files (dormancy_probe.py, test_dormancy_probe.py) were moved out of
+the tree with a plain `mv` - reproducing the parent commit's tree for every
+file `taste_engine.evaluate` can reach - the eval was run once in that state
+(the genuine "before"), the files were moved back, `git status --porcelain`
+confirmed the restored tree matched the commit plus only the three brief
+files (empty diff on everything else), and the eval was run again in the
+restored, after state.
+
+Confirmed byte-identical: before-run vs. after-run (empty diff, two separate
+Python processes, output redirected straight to a file each time, never
+piped through head/tail - CLAUDE.md Trap 3).
+
+Confirmed also byte-identical against reports/eval_invariance_dormancy.txt's
+recorded output from the prior brief (line for line, including the
+cluster_diverse row at ndcg@50 = 0.3080 - the value that report found
+already diverged from the older eval_invariance_window.txt snapshot, traced
+there to f689446 landing before that brief started). Nothing has moved since
+that report was written; this brief adds no further explanation beyond what
+eval_invariance_dormancy.txt already gives for that historical divergence.
+
+Full output below (identical across all three references: this brief's
+before-run, this brief's after-run, and the prior brief's recorded snapshot)
+is verbatim and unedited.
+
+========================================================================
+
+Temporal hold-out  train < 2026-06-01 <= test (to 2026-07-01)
+  half-life               14 days
+  train tracks         2,066 (5,465 plays)
+  test tracks            867 (1,613 plays)
+  seen in train          390 (cold start: 477)
+  ceiling@50          100.0%
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+        recency    22          0.44   0.3088    0.2620
+cluster_diverse    27          0.54   0.3080       NaN
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).
