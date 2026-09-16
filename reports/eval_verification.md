@@ -290,6 +290,89 @@ success — is real and would matter on a future run that hit one. Per the
 brief's non-goals, this is reported, not fixed, and no Last.fm fetch was
 re-run.
 
+## B1 — the comparison under all three noise conventions
+
+Per brief: measurement only, additive. `cluster_eval.coherence()` is
+unchanged and stays the default; `coherence_by_convention()`
+(`cluster_eval.py`) computes the same ARI/NMI/purity under the other two
+conventions the brief lists, over the same clustering, same ground truth, no
+HDBSCAN parameter touched. Script: `scripts/noise_convention_report.py`.
+
+**First line, because it's the headline this brief asked for: the ARI
+ranking does *not* survive under all three conventions.** `title_artist`
+wins on ARI under "exclude" (current) and "singletons", but loses to
+`title_genre` under "single cluster" (0.145 vs 0.185). NMI and purity are
+unaffected — `title_artist` wins those two metrics under all three
+conventions, including "single cluster".
+
+| mode | convention | n_eval | ARI | NMI | purity |
+|---|---|---:|---:|---:|---:|
+| `title_artist` | exclude (current) | 238 | **0.665** | **0.638** | **0.685** |
+| `title_artist` | single cluster | 438 | 0.145 | **0.419** | **0.432** |
+| `title_artist` | singletons | 438 | **0.439** | **0.652** | **0.829** |
+| `title` | exclude (current) | 188 | 0.371 | 0.454 | 0.463 |
+| `title` | single cluster | 438 | 0.035 | 0.235 | 0.276 |
+| `title` | singletons | 438 | 0.199 | 0.585 | 0.769 |
+| `title_genre` | exclude (current) | 314 | 0.366 | 0.445 | 0.395 |
+| `title_genre` | single cluster | 438 | **0.185** | 0.350 | 0.333 |
+| `title_genre` | singletons | 438 | 0.283 | 0.525 | 0.566 |
+
+(bold = winner within that convention/metric column across the three modes.)
+`n_eval` is 438 for both inclusive conventions because neither drops any
+ground-truth row — the same 438 discussed in A1/A3.1, already 48 short of
+the 486 ground-truth tracks that are actually music, for the unrelated
+canonical-collapse reason in A3.1. All nine rows above share that same
+438-track base under the two inclusive conventions, so it does not confound
+this specific table, but the 438 itself should not be read as a clean
+denominator.
+
+**Purity caveat, stated in the table rather than left implicit:** singleton
+purity (0.829/0.769/0.566) is inflated by construction — every noise point
+becomes a cluster of exactly one, which is trivially 100% "pure" regardless
+of what the track actually is. That inflation is roughly uniform in
+direction (it helps every mode) but not in *size*: a noisier mode gets more
+free singletons, so `title` (54.8% noise) is flattered more than
+`title_genre` (36.0% noise). Purity numbers are not comparable between the
+exclude and singleton columns for this reason; ARI and NMI, being
+chance/entropy-corrected, do not have this specific problem, which is
+itself part of why they are reported alongside purity rather than instead
+of it.
+
+**Which convention does the comparison favour, and why — argued from the
+metric's own definition, not from an authority this session cannot check:**
+"single cluster" manufactures same-predicted-cluster pairs for every pair of
+noise points, regardless of whether they share a true label. The number of
+such spurious pairs grows quadratically with the noise count
+(`C(n_noise, 2)`), so the penalty this convention imposes scales with how
+*much* noise a mode has, not with how wrong the model actually is about
+those points — which is exactly the kind of mode-dependent distortion this
+whole brief is about, just moved from the denominator into the pairing
+itself. `title` has the most noise (54.8%) and the harshest single-cluster
+ARI collapse (0.371 → 0.035, a 91% drop); `title_genre` has the least noise
+(36.0%) among the three and the smallest collapse (0.366 → 0.185, 49%). That
+is the mechanism, not a coincidence, and it is the reason `title_genre` can
+overtake `title_artist` under this convention despite `title_artist` still
+winning NMI and purity there: `title_artist`'s 44.8% noise rate costs it
+more under a convention that punishes noise volume quadratically.
+"Singletons" imposes a per-point penalty instead — a noise point can never
+manufacture agreement with another noise point, whatever the count — so the
+penalty scales with *how many ground-truth pairs a mode failed to place*,
+not with the square of how many points it left unassigned. That is the more
+defensible convention for comparing modes with different noise rates, and
+under it the ranking matches "exclude" on all three metrics. **The choice is
+Udit's to make** — this section presents the argument, not a unilateral
+edit to which convention `coherence()` uses by default.
+
+**Bottom line for the headline comparison:** on the metric most prominently
+quoted (ARI), `title_artist`'s win is convention-dependent — real and
+sizable under two of three conventions, reversed under the third. On NMI and
+purity, the win is convention-independent. The brief's literal trigger
+("does `title_artist` only win under the current convention?") is not met —
+it wins under two of three on the headline metric, and all three on the
+other two — but the ARI flip under "single cluster" is a real, reportable
+instability the current README does not surface, since the README quotes
+only the exclude-convention numbers.
+
 ## Summary of verdicts
 
 | # | finding | verdict | fix in this brief? |

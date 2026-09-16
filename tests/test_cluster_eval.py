@@ -2,7 +2,12 @@
 import pandas as pd
 import pytest
 
-from taste_engine.cluster_eval import coherence, playlist_ground_truth, purity
+from taste_engine.cluster_eval import (
+    coherence,
+    coherence_by_convention,
+    playlist_ground_truth,
+    purity,
+)
 from taste_engine.embed import build_corpus, strip_artist_from_title
 
 
@@ -48,6 +53,80 @@ class TestCoherence:
     def test_degenerate_input_does_not_raise(self):
         clustered = pd.DataFrame({"video_id": ["a"], "cluster": [-1]})
         assert coherence(clustered, {"a": "P"})["ari"] == 0.0
+
+
+class TestCoherenceByConvention:
+    """Noise scored three ways, side by side - see reports/eval_verification.md (A1/B1).
+
+    Fixture: two clean clusters (a,b -> P; c,d -> Q) plus two noise points
+    that are truly heterogeneous (e is P-like, f is Q-like). `coherence()`
+    only ever implements "exclude"; this checks the other two conventions
+    without changing that default.
+    """
+
+    CLUSTERED = pd.DataFrame(
+        {"video_id": list("abcdef"), "cluster": [0, 0, 1, 1, -1, -1]}
+    )
+    TRUTH = {"a": "P", "b": "P", "c": "Q", "d": "Q", "e": "P", "f": "Q"}
+
+    def test_exclude_matches_coherence_exactly(self):
+        """The new function's "exclude" row must agree with the existing,
+        unmodified `coherence()` - it is a reproduction, not a replacement."""
+        table = coherence_by_convention(self.CLUSTERED, self.TRUTH)
+        exclude = table.set_index("convention").loc["exclude"]
+        old = coherence(self.CLUSTERED, self.TRUTH)
+        assert exclude["n_eval"] == old["n_eval"]
+        assert exclude["ari"] == pytest.approx(old["ari"])
+        assert exclude["nmi"] == pytest.approx(old["nmi"])
+        assert exclude["purity"] == pytest.approx(old["purity"])
+
+    def test_exclude_looks_perfect_by_hiding_the_noise(self):
+        table = coherence_by_convention(self.CLUSTERED, self.TRUTH)
+        row = table.set_index("convention").loc["exclude"]
+        assert row["n_eval"] == 4
+        assert row["ari"] == pytest.approx(1.0)
+
+    def test_single_cluster_scores_lower_than_exclude(self):
+        """Lumping heterogeneous noise (P and Q) into one cluster manufactures
+        a disagreement the exclude convention hid."""
+        table = coherence_by_convention(self.CLUSTERED, self.TRUTH)
+        row = table.set_index("convention").loc["single_cluster"]
+        assert row["n_eval"] == 6
+        assert row["ari"] == pytest.approx(0.24242424242424243)
+
+    def test_singletons_scores_between_exclude_and_single_cluster(self):
+        """Each noise point isolated in its own cluster: no false agreement
+        between e and f, but also no reward for the two clean clusters
+        beyond what singletons cost by existing at all."""
+        table = coherence_by_convention(self.CLUSTERED, self.TRUTH)
+        row = table.set_index("convention").loc["singletons"]
+        assert row["n_eval"] == 6
+        assert row["ari"] == pytest.approx(0.375)
+
+    def test_singletons_never_lets_two_noise_points_share_a_label(self):
+        table = coherence_by_convention(self.CLUSTERED, self.TRUTH)
+        # e and f are the two noise points; if the convention worked, their
+        # predicted labels are >= 0 (real HDBSCAN ids never collide with the
+        # fresh ones assigned here) and distinct from each other.
+        from taste_engine.cluster_eval import _relabel_noise
+
+        remapped = _relabel_noise(self.CLUSTERED["cluster"].tolist(), "singletons")
+        noise_positions = [i for i, c in enumerate(self.CLUSTERED["cluster"]) if c == -1]
+        noise_labels = [remapped[i] for i in noise_positions]
+        assert len(set(noise_labels)) == len(noise_labels)
+        assert all(label >= 0 for label in noise_labels)
+
+    def test_degenerate_input_does_not_raise(self):
+        table = coherence_by_convention(
+            pd.DataFrame({"video_id": ["a"], "cluster": [-1]}), {"a": "P"}
+        )
+        assert (table["ari"] == 0.0).all()
+
+    def test_unknown_convention_is_refused(self):
+        from taste_engine.cluster_eval import _relabel_noise
+
+        with pytest.raises(ValueError, match="convention must be"):
+            _relabel_noise([0, -1], "vibes")
 
 
 class TestGroundTruth:

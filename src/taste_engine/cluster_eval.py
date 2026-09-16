@@ -91,6 +91,88 @@ def coherence(clustered: pd.DataFrame, truth: dict[str, str]) -> dict:
     }
 
 
+NOISE_CONVENTIONS = ("exclude", "single_cluster", "singletons")
+
+
+def _relabel_noise(predicted: list[int], convention: str) -> list[int]:
+    """Remap HDBSCAN's -1 noise label under an explicit convention.
+
+    * "single_cluster" leaves -1 as-is: every noise point gets the *same*
+      label, so a mode is scored as if all its unassigned tracks belonged to
+      one (likely very heterogeneous) group.
+    * "singletons" gives every noise point its own fresh label, so no two
+      noise points can ever be scored as "agreeing" with each other - each
+      one is simply a cluster of one.
+    """
+    if convention == "single_cluster":
+        return list(predicted)
+    if convention == "singletons":
+        next_id = (max(predicted) if predicted else -1) + 1
+        out = []
+        for p in predicted:
+            if p >= 0:
+                out.append(p)
+            else:
+                out.append(next_id)
+                next_id += 1
+        return out
+    raise ValueError(
+        f"convention must be 'single_cluster' or 'singletons', got {convention!r}"
+    )
+
+
+def coherence_by_convention(
+    clustered: pd.DataFrame, truth: dict[str, str]
+) -> pd.DataFrame:
+    """ARI/NMI/purity under all three ways of scoring HDBSCAN noise.
+
+    `coherence()` implements "exclude" only: noise is dropped before
+    ARI/NMI/purity are computed, and `n_eval` shrinks with it. That is a
+    defensible convention on its own, but comparing modes on excluded-noise
+    ARI is only a fair comparison if the excluded share is similar across
+    the modes being compared - see reports/eval_verification.md (A1) for a
+    case where it ranges 42.9%-71.7% of the same ground truth. This function
+    does not replace `coherence()` or change its default; it is an explicit,
+    side-by-side alternative so the choice of convention is visible instead
+    of implicit.
+    """
+    labelled = clustered[clustered["video_id"].isin(truth)]
+    total_labelled = len(labelled)
+    if total_labelled < 2:
+        return pd.DataFrame(
+            [
+                {"convention": c, "n_eval": total_labelled, "ari": 0.0,
+                 "nmi": 0.0, "purity": 0.0}
+                for c in NOISE_CONVENTIONS
+            ]
+        )
+
+    actual_full = [truth[v] for v in labelled["video_id"]]
+    predicted_full = labelled["cluster"].tolist()
+
+    mask = [p >= 0 for p in predicted_full]
+    actual_excl = [a for a, m in zip(actual_full, mask) if m]
+    pred_excl = [p for p, m in zip(predicted_full, mask) if m]
+    rows = [{
+        "convention": "exclude",
+        "n_eval": len(pred_excl),
+        "ari": float(adjusted_rand_score(actual_excl, pred_excl)) if len(pred_excl) >= 2 else 0.0,
+        "nmi": float(normalized_mutual_info_score(actual_excl, pred_excl)) if len(pred_excl) >= 2 else 0.0,
+        "purity": purity(pred_excl, actual_excl),
+    }]
+
+    for convention in ("single_cluster", "singletons"):
+        pred_conv = _relabel_noise(predicted_full, convention)
+        rows.append({
+            "convention": convention,
+            "n_eval": total_labelled,
+            "ari": float(adjusted_rand_score(actual_full, pred_conv)),
+            "nmi": float(normalized_mutual_info_score(actual_full, pred_conv)),
+            "purity": purity(pred_conv, actual_full),
+        })
+    return pd.DataFrame(rows)
+
+
 def compare_modes(
     conn: sqlite3.Connection,
     tracks: pd.DataFrame,
