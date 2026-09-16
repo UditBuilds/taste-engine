@@ -116,7 +116,19 @@ def label_cluster_spread(labeled: pd.DataFrame) -> dict[str, int]:
 
 
 def _modal(genre_lists: pd.Series):
-    """(modal_genre, n_labeled, modal_share, ambiguous) or (None, 0, None, None)."""
+    """(modal_genre, n_labeled, modal_share, ambiguous) or (None, 0, None, None).
+
+    Tie-break: highest count, then alphabetically-first label - matching
+    `writer._modal_genre`'s fix (2026-09-14) rather than inventing a second
+    idiom. `Counter.most_common(1)` resolves a tie by dict-insertion order,
+    which traces back to iterating `set(gl)` above, and Python randomises
+    string hashing per process by default, so that tie-break is not stable
+    across process runs. Live on this corpus, not hypothetical: a scan
+    found 16 of 37 real clusters carrying an exact top-1 vote tie today,
+    including Metro Boomin (28-28, "pop"/"hip hop") and T-Series (19-19,
+    "music of asia"/"pop") - the same two clusters `writer._modal_genre`'s
+    docstring names.
+    """
     labeled = genre_lists[genre_lists.map(len) > 0]
     n_labeled = len(labeled)
     if n_labeled == 0:
@@ -124,7 +136,7 @@ def _modal(genre_lists: pd.Series):
     counts = Counter()
     for gl in labeled:
         counts.update(set(gl))
-    modal_genre, modal_count = counts.most_common(1)[0]
+    modal_genre, modal_count = min(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     modal_share = modal_count / n_labeled
     return modal_genre, n_labeled, modal_share, modal_share <= 0.5
 
