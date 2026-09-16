@@ -99,6 +99,7 @@ def scored_tracks(
     half_life: float | None = None,
     music_only: bool = True,
     canonical: bool = True,
+    playlist_as_of: str | None = None,
 ) -> pd.DataFrame:
     """Scored tracks for a window, joined to titles and music labels.
 
@@ -109,8 +110,15 @@ def scored_tracks(
     track and sums their plays. Leaving it off inflates nDCG and leaks
     favourites past the rediscovery hold-out — see `canonical.py`. It is a
     parameter only so the two can be measured against each other.
+
+    `playlist_as_of`, when given, is passed straight to `classify()`: it
+    restricts `in_playlist` (and anything derived from it, including
+    `is_music`) to playlist additions at or before that date. `None` (the
+    default) is undated, current-as-of-now playlist membership — correct for
+    every caller except a temporal hold-out's training window. See
+    `evaluate.split_frames` and reports/eval_verification.md (A2).
     """
-    labels = classify(conn)
+    labels = classify(conn, playlist_as_of=playlist_as_of)
     if music_only:
         labels = labels[labels["is_music"]]
 

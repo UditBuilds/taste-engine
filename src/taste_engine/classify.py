@@ -60,13 +60,30 @@ def _video_frame(conn: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
-def classify_heuristic(conn: sqlite3.Connection) -> pd.DataFrame:
-    """Label every unique history video using signals that cost no quota."""
+def classify_heuristic(
+    conn: sqlite3.Connection, playlist_as_of: str | None = None
+) -> pd.DataFrame:
+    """Label every unique history video using signals that cost no quota.
+
+    `playlist_as_of`, when given, restricts `in_playlist` to playlist rows
+    added at or before that date. Without it (the default, and every caller
+    outside `evaluate.split_frames`), `in_playlist` reflects playlist
+    membership as of *now* regardless of when a track was added - correct
+    for the live write path, which should use the most current curation
+    available, but wrong for a temporal hold-out's training corpus, which
+    must not learn that a track was added to a playlist after the split it
+    is being evaluated against. See reports/eval_verification.md (A2).
+    """
     df = _video_frame(conn)
 
-    playlist_ids = set(
-        r[0] for r in conn.execute("SELECT DISTINCT video_id FROM playlist_tracks")
-    )
+    if playlist_as_of is None:
+        playlist_rows = conn.execute("SELECT DISTINCT video_id FROM playlist_tracks")
+    else:
+        playlist_rows = conn.execute(
+            "SELECT DISTINCT video_id FROM playlist_tracks WHERE added_at <= ?",
+            (playlist_as_of,),
+        )
+    playlist_ids = set(r[0] for r in playlist_rows)
     library_ids = set(r[0] for r in conn.execute("SELECT video_id FROM library_songs"))
 
     channel = df["channel"].fillna("")
@@ -97,42 +114,53 @@ def has_metadata(conn: sqlite3.Connection) -> bool:
 _CACHE: dict = {}
 
 
-def _cache_key(conn: sqlite3.Connection) -> tuple:
-    """Identify the database by path and row counts.
+def _cache_key(conn: sqlite3.Connection, playlist_as_of: str | None = None) -> tuple:
+    """Identify the database, its state, and the classification parameters.
 
     Cheap to compute and changes whenever the parser or resolver has run, so a
-    stale frame cannot survive a re-parse.
+    stale frame cannot survive a re-parse. `playlist_as_of` is part of the key
+    (not a reason to invalidate everything else) because a hold-out sweep
+    legitimately needs one classification per split date in the same run -
+    each is a different, equally valid answer for a different `as_of`.
     """
     path = conn.execute("PRAGMA database_list").fetchone()[2]
     plays = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
     meta = conn.execute("SELECT COUNT(*) FROM video_metadata").fetchone()[0]
-    return (path, plays, meta, config.STRICT_MUSIC)
+    return (path, plays, meta, config.STRICT_MUSIC, playlist_as_of)
 
 
-def classify(conn: sqlite3.Connection, use_cache: bool = True) -> pd.DataFrame:
+def classify(
+    conn: sqlite3.Connection,
+    use_cache: bool = True,
+    playlist_as_of: str | None = None,
+) -> pd.DataFrame:
     """Memoised wrapper - labelling 30k videos is pure and not cheap.
 
-    A hold-out sweep calls this once per split per half-life; without the cache
-    the sweep is dominated by recomputing an answer that cannot have changed.
+    A hold-out sweep calls this once per split per half-life; without the
+    cache the sweep is dominated by recomputing an answer that cannot have
+    changed for a *given* `playlist_as_of`. Keyed per `playlist_as_of` (see
+    `_cache_key`) rather than cleared on every miss, so a sweep across
+    several split dates still gets a cache hit once it revisits one.
     Returns a copy so callers cannot corrupt the cached frame.
     """
     if not use_cache:
-        return _classify_uncached(conn)
-    key = _cache_key(conn)
+        return _classify_uncached(conn, playlist_as_of=playlist_as_of)
+    key = _cache_key(conn, playlist_as_of)
     if key not in _CACHE:
-        _CACHE.clear()  # only ever one database in play
-        _CACHE[key] = _classify_uncached(conn)
+        _CACHE[key] = _classify_uncached(conn, playlist_as_of=playlist_as_of)
     return _CACHE[key].copy()
 
 
-def _classify_uncached(conn: sqlite3.Connection) -> pd.DataFrame:
+def _classify_uncached(
+    conn: sqlite3.Connection, playlist_as_of: str | None = None
+) -> pd.DataFrame:
     """Heuristic labels, plus API labels wherever metadata has been fetched.
 
     `is_music` is the union of the two (see the reasoning below), so the
     pipeline runs to completion with or without API access: without metadata
     it degrades cleanly to the heuristics alone.
     """
-    df = classify_heuristic(conn)
+    df = classify_heuristic(conn, playlist_as_of=playlist_as_of)
 
     if not has_metadata(conn):
         df["category_id"] = None

@@ -147,6 +147,95 @@ class TestNoLeakage:
         assert train["last_played"].max() < SPLIT <= test["first_played"].min()
 
 
+class TestPlaylistAsOf:
+    """B2 - `in_playlist` must not see a playlist addition from after an
+    evaluation split. `classify.py`'s `in_playlist` previously had no date
+    condition at all - see reports/eval_verification.md (A2). Every test
+    here fails with a TypeError against the pre-fix signatures, which took
+    no `playlist_as_of` argument at all.
+    """
+
+    def test_default_is_undated(self, db):
+        """Explicit None must reproduce every other caller's behaviour -
+        the live write path is not supposed to change."""
+        from taste_engine.classify import classify_heuristic
+
+        default = classify_heuristic(db)
+        explicit_none = classify_heuristic(db, playlist_as_of=None)
+        pd.testing.assert_series_equal(
+            default["in_playlist"], explicit_none["in_playlist"]
+        )
+
+    def test_an_impossibly_early_cutoff_empties_in_playlist(self, db):
+        """Every real playlist_tracks.added_at postdates this - proves the
+        date condition is actually applied, not silently ignored."""
+        from taste_engine.classify import classify_heuristic
+
+        dated = classify_heuristic(db, playlist_as_of="1900-01-01")
+        assert not dated["in_playlist"].any()
+
+    def test_a_cutoff_at_or_after_every_add_matches_undated(self, db):
+        from taste_engine.classify import classify_heuristic
+
+        latest_add = db.execute(
+            "SELECT MAX(added_at) FROM playlist_tracks"
+        ).fetchone()[0]
+        dated = classify_heuristic(db, playlist_as_of=latest_add)
+        undated = classify_heuristic(db)
+        pd.testing.assert_series_equal(dated["in_playlist"], undated["in_playlist"])
+
+    def test_cutoff_excludes_a_track_added_only_after_it(self, db):
+        """The exact scenario A2 describes: a real track that is both a
+        playlist member and has been played must lose `in_playlist` once
+        the cutoff predates its addition, while staying `in_playlist`
+        undated. Not a hardcoded video id - picked from live data so this
+        does not rot across a re-parse."""
+        from taste_engine.classify import classify_heuristic
+
+        row = db.execute(
+            "SELECT DISTINCT pt.video_id FROM playlist_tracks pt "
+            "JOIN plays p ON p.video_id = pt.video_id LIMIT 1"
+        ).fetchone()
+        video_id = row[0]
+        cutoff = "2000-01-01"  # predates this dataset's earliest playlist add
+        dated = classify_heuristic(db, playlist_as_of=cutoff).set_index("video_id")
+        undated = classify_heuristic(db).set_index("video_id")
+        assert bool(undated.loc[video_id, "in_playlist"]) is True
+        assert bool(dated.loc[video_id, "in_playlist"]) is False
+
+    def test_scored_tracks_threads_playlist_as_of_to_classify(self, db):
+        """An impossible cutoff can only remove is_music tracks, never add
+        one - in_playlist only ever widens eligibility, never narrows it."""
+        from taste_engine.score import scored_tracks
+
+        dated = scored_tracks(db, playlist_as_of="1900-01-01", canonical=False)
+        undated = scored_tracks(db, canonical=False)
+        assert set(dated["video_id"]) <= set(undated["video_id"])
+        assert len(dated) < len(undated)
+
+    def test_split_frames_dates_the_training_frame_only(self, db):
+        """The train/test asymmetry is deliberate (A2: dating `test` would
+        censor the ground truth on no evidence of a real leak there) - pin
+        it down so a future edit cannot silently drop `playlist_as_of` from
+        `train` or add it to `test` without a test failing."""
+        from taste_engine.score import scored_tracks
+
+        train, test = split_frames(db, SPLIT, cluster=False)
+        expected_train = scored_tracks(
+            db, start=None, end=SPLIT, as_of=SPLIT, canonical=True,
+            playlist_as_of=SPLIT,
+        )
+        expected_test = scored_tracks(
+            db, start=SPLIT, end=None, as_of=None, canonical=True,
+        )
+        pd.testing.assert_frame_equal(
+            train.reset_index(drop=True), expected_train.reset_index(drop=True)
+        )
+        pd.testing.assert_frame_equal(
+            test.reset_index(drop=True), expected_test.reset_index(drop=True)
+        )
+
+
 class TestWindowEnd:
     """--test-end pins an absolute window bound - briefs/pin_evaluation.md."""
 

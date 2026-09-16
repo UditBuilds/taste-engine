@@ -72,12 +72,23 @@ def split_frames(
     `as_of=split_date` is the load-bearing detail: scoring the training window
     from today would leak the length of the test window into the recency term.
 
+    `playlist_as_of=split_date` on the training call is the same idea applied
+    to `is_music`: without it, a track's playlist membership - and therefore
+    whether it is eligible for the training corpus at all - reflects *today's*
+    curation rather than what was known as of the split, so the model could
+    train on a track that only became a playlist member after the window it
+    is being evaluated on. `test` is deliberately left undated: it exists only
+    to record what was actually played in the future window, not to train
+    on, and judging "is this a legitimate music track" from the most complete
+    signal available is not a leak in the same sense. See
+    reports/eval_verification.md (A2).
+
     `test_end`, when given, bounds the test window at that absolute date
     instead of `test_days` after `split_date` — see `_window_end`.
     """
     train = scored_tracks(
         conn, start=None, end=split_date, as_of=split_date, half_life=half_life,
-        canonical=canonical,
+        canonical=canonical, playlist_as_of=split_date,
     )
     test = scored_tracks(
         conn, start=split_date, end=_window_end(split_date, test_days, test_end),

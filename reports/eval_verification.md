@@ -373,6 +373,69 @@ other two — but the ARI flip under "single cluster" is a real, reportable
 instability the current README does not surface, since the README quotes
 only the exclude-convention numbers.
 
+## B2 — date the training frame's `in_playlist`, re-run the pinned eval
+
+Per brief: proceed because A2.4's count (44) is non-zero, even though A2's
+own section above already showed zero of those 44 videos change `is_music`
+at any tested split. An undated global in a temporal hold-out is wrong on
+its own terms regardless of today's data, and a future split or a future
+Takeout re-export could make it matter.
+
+**Fix.** `classify_heuristic`/`classify`/`_classify_uncached` (`classify.py`)
+take a new `playlist_as_of: str | None = None` parameter: `None` (the
+default, every caller except one) reproduces the exact previous query;
+given a date, `in_playlist` is restricted to
+`playlist_tracks.added_at <= playlist_as_of`. `scored_tracks` (`score.py`)
+threads it straight to `classify()`. `evaluate.split_frames` (`evaluate.py`)
+passes `playlist_as_of=split_date` on the **training** call only — `test`
+is deliberately left undated, since it exists to record what was actually
+played in the future window, not to train on, and A2 found no leak on that
+side to fix. This is the single choke point both `evaluate()` (replay) and
+`evaluate_rediscovery()`/`rediscovery_split()` (rediscovery, and therefore
+`nested_rediscovery`, `rediscovery_robustness`, `robustness`, `sweep`,
+`sweep_splits`) already share, so the fix reaches every eval entry point
+through one change.
+
+Production is unaffected: `writer.py`, `recommend.py`, `embed.py`,
+`cluster_eval.py`, `dormancy.py`, `lastfm.py` and every script call
+`scored_tracks`/`classify` with no `playlist_as_of`, so they get exactly
+`None` — identical to pre-fix behaviour. `classify()`'s in-memory cache key
+now includes `playlist_as_of` (previously just path/row-counts/
+`STRICT_MUSIC`) and the cache is no longer cleared on every miss, only
+added to — a hold-out sweep touching nine split dates needs nine valid,
+simultaneously-cached entries, not one that gets discarded and rebuilt
+every time the split changes.
+
+**Prediction, written before running anything:** byte-identical output at
+the pinned split, because the A2 section above already established zero of
+the 44 tracks change `is_music` there.
+
+**Before/after**, `--split 2026-06-01 --test-end 2026-07-01 -k 50
+--half-life 14` (pre-fix run captured via `git stash` on the four changed
+files, eval re-run, `git stash pop` to restore — same method this repo used
+for the backfill invariance check):
+
+| strategy | hits (before → after) | precision@50 | ndcg@50 | spearman |
+|---|---|---|---|---|
+| score | 31 → 31 | 0.62 → 0.62 | 0.5506 → 0.5506 | 0.3583 → 0.3583 |
+| most_played | 32 → 32 | 0.64 → 0.64 | 0.5421 → 0.5421 | 0.4300 → 0.4300 |
+| cluster_diverse | 25 → 25 | 0.50 → 0.50 | 0.3360 → 0.3360 | NaN → NaN |
+| recency | 22 → 22 | 0.44 → 0.44 | 0.3088 → 0.3088 | 0.2620 → 0.2620 |
+
+`train_tracks` (2,066), `test_tracks` (867), `cold_start` (477) and every
+other summary field are also unchanged. The two output files differ by
+zero bytes (`diff` confirms). **This is not softened into "the leak was
+fixed" — the honest result is that fixing a real defect moved nothing,
+because A2 already showed nothing was riding on it at this split.** The fix
+still stands: it closes a temporal hold-out to a class of contamination
+that happens to be inert today, and the nine-split checks in A2 show it is
+inert at every split this project's own nested-tuning evaluation currently
+walks, not only the pinned one — but "inert today" is a property of this
+dataset at this moment, not a property of the code, and the code is what a
+future re-export or a later split would run against.
+
+480 tests passing (467 at the §0 gate + 7 from B1 + 6 from B2).
+
 ## Summary of verdicts
 
 | # | finding | verdict | fix in this brief? |
