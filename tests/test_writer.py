@@ -1073,6 +1073,75 @@ class TestBackfillDistanceRanking:
         assert len(distinct) == 16  # fully disjoint, not just "not identical"
 
 
+class TestStatusRows:
+    """Brief: accumulated defect fixes, B3 (2026-09-16) - a local read of
+    written_playlists, zero quota. See tests/test_cli.py for the
+    `status`/`status --verify` command itself.
+    """
+
+    def test_matches_a_completed_write(self, env):
+        conn, ledger, api = env
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(3))
+        report = writer.execute_write(conn, api, ledger, p)
+        rows = writer.status_rows(conn)
+        assert len(rows) == 1
+        row = rows.iloc[0]
+        assert row["id"] == report["row_id"]
+        assert row["cluster"] == 3
+        assert row["planned"] == 3
+        assert row["written"] == 3
+        assert row["status"] == "complete"
+        assert row["playlist_url"] == (
+            f"https://www.youtube.com/playlist?list={report['playlist_id']}"
+        )
+
+    def test_empty_before_any_write(self, env):
+        conn, _, _ = env
+        assert writer.status_rows(conn).empty
+
+    def test_pending_row_has_no_playlist_url(self, env):
+        conn, _, _ = env
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(2))
+        row_id = writer._create_row(conn, p)
+        row = writer.status_rows(conn).iloc[0]
+        assert row["id"] == row_id
+        assert row["playlist_url"] == ""
+        assert row["status"] == writer.STATUS_PENDING
+
+    def test_columns_are_the_documented_shape(self, env):
+        conn, ledger, api = env
+        p = writer.plan(conn, cluster=3, tracks=make_tracks(2))
+        writer.execute_write(conn, api, ledger, p)
+        assert list(writer.status_rows(conn).columns) == [
+            "id", "cluster", "title", "playlist_url", "planned", "written",
+            "status", "updated_at",
+        ]
+
+    def test_a_rolled_back_row_has_no_playlist_url_not_the_string_nan(self, env):
+        """Regression: caught live against the real database (rows 1-3,
+        status=rolled_back) - a rolled-back row's playlist_id (SQL NULL)
+        came back from pd.read_sql as float NaN, not None, once the column
+        also held real string values elsewhere in the table - `if pid`
+        alone is truthy for NaN, so the URL rendered as the literal string
+        "https://www.youtube.com/playlist?list=nan". A lone NULL row (see
+        test_pending_row_has_no_playlist_url, which passed even before this
+        fix) does not reproduce it - this needs a second, real-valued row
+        in the same table, matching what actually happened live."""
+        conn, ledger, api = env
+        ok = writer.plan(conn, cluster=3, tracks=make_tracks(2))
+        ok_report = writer.execute_write(conn, api, ledger, ok)
+
+        bad = writer.plan(conn, cluster=3, tracks=make_tracks(2, start=10))
+        bad_report = writer.execute_write(conn, api, ledger, bad)
+        writer.rollback(conn, api, ledger, bad_report["row_id"])
+
+        rows = writer.status_rows(conn).set_index("id")
+        assert rows.loc[bad_report["row_id"], "playlist_url"] == ""
+        assert rows.loc[ok_report["row_id"], "playlist_url"] == (
+            f"https://www.youtube.com/playlist?list={ok_report['playlist_id']}"
+        )
+
+
 class TestModalGenreTieBreak:
     """_modal_genre's tie-break must not depend on Python's per-process
     string hash seed. Found live on the real corpus 2026-09-14: Metro

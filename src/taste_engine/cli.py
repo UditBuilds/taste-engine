@@ -6,10 +6,13 @@
     taste-engine write --resume 2 --commit               # continues a partial
     taste-engine write --rollback 2                      # deletes it (50 units)
     taste-engine written                                 # what exists
+    taste-engine status                                  # same, local read, zero quota
+    taste-engine status --verify 2                       # + confirm against YouTube (1 unit)
     taste-engine clusters                                # pick a --cluster
 
 Dry run is the default everywhere. Nothing contacts YouTube, and nothing costs
-quota, until `--commit` is passed.
+quota, until `--commit` is passed (or, for `status`, `--verify` - 1 unit,
+stated before the call).
 """
 from __future__ import annotations
 
@@ -139,6 +142,42 @@ def cmd_write(args) -> int:
         conn.close()
 
 
+def cmd_status(args) -> int:
+    conn = connect()
+    try:
+        if args.verify is not None:
+            row = writer.get_row(conn, args.verify)
+            print(f"Verifying row {args.verify} ({row['title']!r}): calls "
+                  f"playlistItems.list against playlist {row['playlist_id']}. "
+                  "Cost: 1 unit.")
+            ledger = QuotaLedger(conn)
+            result = writer.verify(conn, _service(), ledger, args.verify)
+            if result.get("checked"):
+                mark = "OK" if result["match"] else "MISMATCH"
+                print(f"  verified    {mark} - YouTube holds {result['remote']}, "
+                      f"expected {result['expected']}")
+            else:
+                print(f"  verified    not checked ({result.get('reason')})")
+            print(f"  units       {ledger.spent():,} spent this call "
+                  f"(remaining today {ledger.remaining():,})")
+            return 1 if result.get("checked") and not result["match"] else 0
+
+        rows = writer.status_rows(conn)
+        if rows.empty:
+            print("No playlists written yet.")
+            return 0
+        print(rows.to_string(index=False))
+        return 0
+    except writer.WriteBlocked as exc:
+        print(f"blocked: {exc}", file=sys.stderr)
+        return 1
+    except QuotaExceeded as exc:
+        print(f"quota: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
+
 def cmd_written(args) -> int:
     conn = connect()
     try:
@@ -215,6 +254,17 @@ def main(argv: list[str] | None = None) -> int:
         help="create the playlist public (default: private)",
     )
     w.set_defaults(func=cmd_write)
+
+    st = sub.add_parser(
+        "status", help="local read of written_playlists rows - zero quota"
+    )
+    st.add_argument(
+        "--verify", type=int, metavar="ROW",
+        help="also call playlistItems.list for this row and compare its "
+             "count against what the DB expects. Costs 1 unit - stated "
+             "before the call is made, like write already does.",
+    )
+    st.set_defaults(func=cmd_status)
 
     sub.add_parser("written", help="list playlists this tool has written").set_defaults(
         func=cmd_written

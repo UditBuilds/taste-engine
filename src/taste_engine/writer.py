@@ -646,6 +646,37 @@ def list_written(conn: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
+def status_rows(conn: sqlite3.Connection) -> pd.DataFrame:
+    """Every written_playlists row, local-only - zero quota.
+
+    Row id, cluster id, title (the human-readable name - cluster ids are
+    not stable across runs, CLAUDE.md, so title is what actually identifies
+    the row to a human), playlist URL, planned vs written counts, status
+    and when the row last changed. Answers "did that write actually
+    happen?" without quota arithmetic - a completed write has finished with
+    no confirmation block printed before (Known open item #7), and nothing
+    short of noticing the quota ledger drop caught it that time.
+    """
+    rows = pd.read_sql(
+        "SELECT id, cluster, title, playlist_id, planned, written, status, "
+        "updated_at FROM written_playlists ORDER BY id",
+        conn,
+    )
+    # NaN is truthy, and a rolled-back row's playlist_id (SQL NULL) comes
+    # back from pd.read_sql as float NaN here, not None - `if pid` alone
+    # rendered a literal "nan" URL, caught live against the real database
+    # (rows 1-3, rolled_back). Same guard idiom as embed.py/canonical.py.
+    rows["playlist_url"] = rows["playlist_id"].map(
+        lambda pid: ""
+        if not pid or pid != pid
+        else f"https://www.youtube.com/playlist?list={pid}"
+    )
+    return rows[
+        ["id", "cluster", "title", "playlist_url", "planned", "written",
+         "status", "updated_at"]
+    ]
+
+
 # --- the write ---------------------------------------------------------------
 
 def _insert_track(service, playlist_id: str, video_id: str, position: int):
