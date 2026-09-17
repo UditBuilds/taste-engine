@@ -14,6 +14,7 @@ from taste_engine.canonical import (
     canonical_key,
     collapse,
     collapse_report,
+    raw_to_canonical_map,
 )
 
 
@@ -157,6 +158,69 @@ class TestCollapse:
     def test_total_plays_are_conserved(self, frame):
         """Collapsing must move plays, never invent or lose them."""
         assert collapse(frame)["play_count"].sum() == frame["play_count"].sum()
+
+
+class TestRawToCanonicalMap:
+    """`raw_to_canonical_map()` exposes `collapse()`'s own raw id -> group
+    mapping without discarding non-representative rows - `collapse()`'s own
+    return value keeps only the survivor. Built by `cluster_eval.
+    canonical_ground_truth()` to fix the raw/canonical id mismatch measured
+    in reports/ground_truth_audit.md: ground truth stores raw upload ids,
+    but the collapsed frame only ever carries one representative id per
+    song, so a raw id that lost its own group's representative slot needs
+    to resolve to whichever id *did* win it, not vanish.
+    """
+
+    @pytest.fixture
+    def frame(self):
+        return pd.DataFrame(
+            {
+                "video_id": ["v1", "v2", "v3", "v4"],
+                "title": [
+                    "Travis Scott - MY EYES (Official Audio)",
+                    "MY EYES",
+                    "Travis Scott - SICKO MODE (Official Video)",
+                    "Die For You",
+                ],
+                "channel": [
+                    "TravisScottVEVO", "Travis Scott - Topic",
+                    "TravisScottVEVO", "Joji - Topic",
+                ],
+                "play_count": [100, 20, 30, 5],
+                "last_played": ["2026-06-01T00:00:00+00:00", "2026-07-01T00:00:00+00:00",
+                                "2026-05-01T00:00:00+00:00", "2026-04-01T00:00:00+00:00"],
+                "first_played": ["2026-01-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00",
+                                 "2026-01-15T00:00:00+00:00", "2026-03-01T00:00:00+00:00"],
+            }
+        )
+
+    def test_every_raw_id_is_mapped(self, frame):
+        mapping = raw_to_canonical_map(frame)
+        assert set(mapping) == set(frame["video_id"])
+
+    def test_a_representative_maps_to_itself(self, frame):
+        """v1 (100 plays) outranks v2 (20 plays) for the same song."""
+        assert raw_to_canonical_map(frame)["v1"] == "v1"
+
+    def test_a_losing_duplicate_maps_to_its_representative(self, frame):
+        """The raw/canonical direction: v2's own id never survives into
+        collapse()'s output, but it must still resolve to the id that did,
+        not to itself and not to nothing."""
+        assert raw_to_canonical_map(frame)["v2"] == "v1"
+
+    def test_a_singleton_maps_to_itself(self, frame):
+        mapping = raw_to_canonical_map(frame)
+        assert mapping["v3"] == "v3"
+        assert mapping["v4"] == "v4"
+
+    def test_representative_ids_agree_with_collapse_exactly(self, frame):
+        """Not a coincidence - both derive canonical_key the same way."""
+        mapping = raw_to_canonical_map(frame)
+        assert set(mapping.values()) == set(collapse(frame)["video_id"])
+
+    def test_empty_input(self):
+        empty = pd.DataFrame(columns=["video_id", "title", "channel", "play_count"])
+        assert raw_to_canonical_map(empty) == {}
 
 
 class TestReport:

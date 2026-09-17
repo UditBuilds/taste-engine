@@ -287,14 +287,13 @@ def merge_by_duration(work: pd.DataFrame, tolerance: int | None = None) -> pd.Se
     return keys.map(lambda k: remap.get(k, k))
 
 
-def collapse(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per song. Play counts sum; the most-played upload represents it.
+def _canonicalise(df: pd.DataFrame) -> pd.DataFrame:
+    """First half of `collapse()`: derive each row's final `canonical_key`.
 
-    The representative must be a real `video_id` — the writer inserts it.
+    Split out so `raw_to_canonical_map()` can expose the raw id -> group
+    mapping for every input row, not just the survivors `collapse()` itself
+    keeps after `grouped.head(1)` discards the rest.
     """
-    if df.empty:
-        return df.assign(variants=pd.Series(dtype="int64"))
-
     work = add_canonical_key(df)
     work["core_key"] = [
         title_core(t, c)
@@ -306,6 +305,42 @@ def collapse(df: pd.DataFrame) -> pd.DataFrame:
     if "duration" in work.columns:
         work["seconds"] = work["duration"].map(iso_seconds)
         work["canonical_key"] = merge_by_duration(work)
+    return work
+
+
+def raw_to_canonical_map(df: pd.DataFrame) -> dict[str, str]:
+    """video_id -> the representative video_id `collapse()` would keep for it.
+
+    `collapse()`'s return value keeps one row per `canonical_key` group (the
+    representative) and discards the rest. A caller that needs to know what a
+    *specific* raw upload canonicalises to - not just the final collapsed
+    frame - needs this instead: every `video_id` in `df` is a key here,
+    mapped to its group's representative, including representatives
+    themselves (mapped to their own id).
+
+    Same derivation `collapse()` uses (`_canonicalise`, then the identical
+    sort + `groupby().first()` `collapse()` uses for `grouped.head(1)`), so
+    the two agree by construction rather than by coincidence.
+    """
+    if df.empty:
+        return {}
+    work = _canonicalise(df)
+    ordered = work.sort_values(
+        ["canonical_key", "play_count", "video_id"], ascending=[True, False, True]
+    )
+    rep_by_key = ordered.groupby("canonical_key", sort=False)["video_id"].first()
+    return dict(zip(work["video_id"], work["canonical_key"].map(rep_by_key)))
+
+
+def collapse(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per song. Play counts sum; the most-played upload represents it.
+
+    The representative must be a real `video_id` — the writer inserts it.
+    """
+    if df.empty:
+        return df.assign(variants=pd.Series(dtype="int64"))
+
+    work = _canonicalise(df)
     work = work.sort_values(
         ["canonical_key", "play_count", "video_id"], ascending=[True, False, True]
     )

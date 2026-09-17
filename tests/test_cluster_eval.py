@@ -3,6 +3,8 @@ import pandas as pd
 import pytest
 
 from taste_engine.cluster_eval import (
+    _drop_conflicts,
+    canonical_ground_truth,
     coherence,
     coherence_by_convention,
     playlist_ground_truth,
@@ -146,6 +148,158 @@ class TestGroundTruth:
         truth = playlist_ground_truth(db)
         assert len(truth) > 1_000
         assert len(set(truth.values())) > 10
+
+
+class TestDropConflicts:
+    """`_drop_conflicts()` - the pure core of `canonical_ground_truth()`.
+
+    Fixes the raw/canonical id mismatch measured in
+    reports/ground_truth_audit.md: ground truth stores raw upload ids, but
+    the collapsed frame only ever carries one representative id per song.
+    `raw_truth`/`rep_map` below stand in for `playlist_ground_truth()`'s and
+    `canonical.raw_to_canonical_map()`'s real shapes, so the join and the
+    conflict rule are exercised without touching the database.
+    """
+
+    def test_a_representative_id_resolves_to_itself(self):
+        """The join, direction one: a raw id that already IS its own
+        group's representative keeps its label under its own id."""
+        truth, _stats = _drop_conflicts({"rep1": "Playlist A"}, {"rep1": "rep1"})
+        assert truth == {"rep1": "Playlist A"}
+
+    def test_a_losing_duplicate_resolves_under_its_representative(self):
+        """The join, direction two - the actual fix: a raw id that lost its
+        group's representative slot to a different upload must still
+        contribute its label, filed under the id that DID win - not under
+        its own (now-vanished) id, and not dropped the way the old
+        raw-vs-canonical join dropped it."""
+        truth, _stats = _drop_conflicts({"loser": "Playlist A"}, {"loser": "winner"})
+        assert truth == {"winner": "Playlist A"}
+        assert "loser" not in truth
+
+    def test_a_raw_id_outside_the_canonical_population_is_dropped_quietly(self):
+        """Not is_music (absent from rep_map) - out of scope, not a conflict."""
+        truth, stats = _drop_conflicts({"not_music": "Playlist A"}, {})
+        assert truth == {}
+        assert stats["conflicts_dropped"] == 0
+
+    def test_two_uploads_of_one_song_in_one_playlist_merge_without_conflict(self):
+        """Same label from both raw ids - not a conflict, just agreement."""
+        truth, stats = _drop_conflicts(
+            {"a": "Playlist A", "b": "Playlist A"}, {"a": "rep", "b": "rep"}
+        )
+        assert truth == {"rep": "Playlist A"}
+        assert stats["conflicts_dropped"] == 0
+
+    def test_two_uploads_in_different_playlists_are_dropped_not_resolved(self):
+        """The conflict rule: DROP the canonical track, don't pick a winner.
+
+        Data-quality exclusion, not a canonicalisation over-merge guard -
+        reports/ground_truth_audit.md (Item 3) confirmed every conflict
+        found is one song independently filed into two playlists, not two
+        different songs wrongly fused by `canonical.py`.
+        """
+        truth, stats = _drop_conflicts(
+            {"a": "Playlist A", "b": "Playlist B"}, {"a": "rep", "b": "rep"}
+        )
+        assert "rep" not in truth
+        assert stats["conflicts_dropped"] == 1
+        assert stats["conflict_detail"] == [{
+            "representative_id": "rep",
+            "labels": ["Playlist A", "Playlist B"],
+            "raw_ids": ["a", "b"],
+        }]
+
+    def test_no_play_count_or_recency_tiebreak_is_possible(self):
+        """The rule takes no play-count/recency input at all to break a tie
+        with - enforced by the function's own signature, not just its
+        behaviour: `_drop_conflicts` only ever sees (raw_truth, rep_map),
+        neither of which carries a play count or a timestamp."""
+        import inspect
+
+        assert list(inspect.signature(_drop_conflicts).parameters) == [
+            "raw_truth", "rep_map",
+        ]
+
+    def test_reported_denominator_matches_truth_length(self):
+        truth, stats = _drop_conflicts(
+            {"a": "P", "b": "Q", "c": "P", "d": "R"},
+            {"a": "ra", "b": "rb", "c": "ra", "d": "rd"},
+        )
+        assert stats["denominator"] == len(truth) == 3
+
+    def test_raw_ground_truth_count_is_the_full_input_even_when_all_dropped(self):
+        _truth, stats = _drop_conflicts(
+            {"a": "P", "b": "Q"}, {"a": "rep", "b": "rep"}
+        )
+        assert stats["raw_ground_truth"] == 2
+        assert stats["denominator"] == 0
+
+    def test_empty_input(self):
+        truth, stats = _drop_conflicts({}, {})
+        assert truth == {}
+        assert stats == {
+            "raw_ground_truth": 0, "denominator": 0,
+            "conflicts_dropped": 0, "conflict_detail": [],
+        }
+
+
+class TestCanonicalGroundTruth:
+    """The DB-facing wrapper: fetches raw ground truth and the raw ->
+    canonical map for real, then delegates to `_drop_conflicts` (tested in
+    isolation above)."""
+
+    def test_population_mismatch_is_refused_not_silently_dropped(self, db):
+        """`tracks` must carry exactly the representative-id population
+        `raw_to_canonical_map(scored_tracks(canonical=False))` produces - a
+        caller passing something else (a stale or differently-filtered
+        frame) must get a loud failure, not ground truth silently missing
+        rows the way the original bug did."""
+        from taste_engine.score import scored_tracks
+
+        tracks = scored_tracks(db)
+        bogus = pd.concat(
+            [tracks, pd.DataFrame([{**tracks.iloc[0].to_dict(), "video_id": "not-a-real-id"}])],
+            ignore_index=True,
+        )
+        with pytest.raises(RuntimeError, match="does not produce the same"):
+            canonical_ground_truth(db, bogus)
+
+    def test_matches_the_real_scored_tracks_population(self, db):
+        """The intended, correctly-populated call succeeds and every
+        surviving id is a real canonical track."""
+        from taste_engine.score import scored_tracks
+
+        tracks = scored_tracks(db)
+        truth, _stats = canonical_ground_truth(db, tracks)
+        assert set(truth) <= set(tracks["video_id"])
+
+
+class TestCanonicalGroundTruthRegression:
+    """Pins today's measured figures (reports/ground_truth_audit.md) against
+    the real database. A regression test, not a claim of general truth -
+    this can legitimately move if the underlying data changes, but an
+    unexplained move is exactly what this test exists to catch.
+
+    Two SEPARATE assertions on purpose, not one combined number: the pool
+    size (denominator) and the conflict-drop count answer different
+    questions, and collapsing them (e.g. asserting their difference, or a
+    tuple) would hide which one moved if this test ever fails.
+    """
+
+    @pytest.fixture(scope="class")
+    def stats(self, db):
+        from taste_engine.score import scored_tracks
+
+        tracks = scored_tracks(db)
+        _truth, stats = canonical_ground_truth(db, tracks)
+        return stats
+
+    def test_denominator_is_480(self, stats):
+        assert stats["denominator"] == 480
+
+    def test_conflicts_dropped_is_3(self, stats):
+        assert stats["conflicts_dropped"] == 3
 
 
 class TestArtistExclusion:

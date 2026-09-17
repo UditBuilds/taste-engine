@@ -1,0 +1,14 @@
+Temporal hold-out  train < 2026-06-01 <= test (to 2026-07-01)
+  half-life               14 days
+  train tracks         2,066 (5,465 plays)
+  test tracks            867 (1,613 plays)
+  seen in train          390 (cold start: 477)
+  ceiling@50          100.0%
+
+       strategy  hits  precision@50  ndcg@50  spearman
+          score    31          0.62   0.5506    0.3583
+    most_played    32          0.64   0.5421    0.4300
+cluster_diverse    25          0.50   0.3360       NaN
+        recency    22          0.44   0.3088    0.2620
+
+  Best on nDCG@50: score at 0.551 vs 0.542 baseline (+1.6%).
