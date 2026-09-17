@@ -113,6 +113,7 @@ wrong number that looks fine.
 | `BACKFILL_ENABLED = False` (2026-09-15) | Joji's first live dry run backfilled 3 Playboi Carti tracks + 1 Don Toliver track, admitted by genre `pop` at distance 0.55–0.70 — well inside the 1.0 ceiling, so no threshold fixes it. Both admission signals measure the wrong quantity: topicCategories tags `pop`/`hip hop` on most of the whole library (not discriminative), and the embedding space is title+artist text, not audio. FLOOR/LENGTH/GUARD/RANK/CEILING code is unchanged and unreached, not deleted. `--backfill` re-enables it for one run — briefs/backfill_toggle.md. |
 | Last.fm tags **not integrated** into scoring/clustering (2026-09-15) | Measurement-only precursor for a future decision brief: 640/2,918 canonical tracks (21.9%) matched directly, +118 (4.0%) via artist-name fallback; dominant failure is the track having zero tags on Last.fm, not a failed lookup. Not viable as a standalone per-track genre/mood signal. `lastfm.py`, `track_tags`/`track_tag_lookups` tables exist for possible future combination with other signals — nothing in scoring/clustering/write-path reads them. `reports/lastfm_coverage.md`. |
 | `evaluate.split_frames`'s **training** frame dates `in_playlist` via `playlist_as_of=split_date`; its **test** frame stays undated (2026-09-16) | An external review found `classify.py`'s `in_playlist` had no date condition at all, and it reaches row membership of the frame a temporal hold-out clusters, not just an `is_music` label. Confirmed, and fixed — `classify()`/`scored_tracks()` take an optional `playlist_as_of` cutoff, `None` everywhere except this one call site, so the live write path and every other caller is unaffected. Measured zero actual impact at the pinned split and all 9 nested-tuning splits before *and* after fixing it (stash/re-run/pop, byte-identical eval output) — no track's `is_music` currently depends on a post-split playlist add — but an undated global in a temporal hold-out is wrong regardless of today's data, so it was fixed anyway. `test` was deliberately left undated: it is ground truth of what was actually played, not training input, and no leak was found on that side. `reports/eval_verification.md`. |
+| `cluster_eval`'s ground truth is mapped raw → canonical **before** the coherence join; a canonical track whose raw ground-truth members carry conflicting playlist labels is **dropped**, never a tiebreak (2026-09-17) | The raw/canonical id mismatch (item 11, below) silently dropped 48 of 486 ground-truth music tracks — `canonical_ground_truth()` fixes the join direction (raw → canonical, matching `clustered["video_id"]`, not the reverse) and reports the resulting denominator explicitly (438 → 480). Canonicalising surfaces 3 canonical tracks carrying two playlists' labels — this is a **data-quality exclusion, not a canonicalisation over-merge guard**: every conflict found is one song independently filed into two playlists by the user, not two different songs wrongly fused (`reports/ground_truth_audit.md`, Item 3, checked all three). Picking a winner by play count or recency would assert a single label the source data does not agree on, so the whole track is dropped instead. `reports/ground_truth_audit.md` (diagnosis), `reports/ground_truth_ids.md` (before/after across modes/conventions — the `title_artist`/`title_genre` gap still clears its noise band under `exclude`/`singletons` both before and after; the already-known `single_cluster` flip, item 10, persists but its margin depends on which `min_samples` the noise band is measured at). |
 
 ### Cluster ids are not identifiers
 
@@ -271,6 +272,44 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
   reasoning behind each verdict: `reports/eval_verification.md`. 480 tests
   passing (three commits: verify, then the noise-convention measurement,
   then the `in_playlist` fix — no batching).
+- **Ground-truth raw/canonical id mismatch fixed (2026-09-17), three
+  commits, strictly sequential per the brief's own Part 0/1/2/3 split.**
+  Part 0 (`scripts/ground_truth_audit.py`, `reports/ground_truth_audit.md`,
+  read-only): confirmed the 48-of-486 drop (item 11), found all 48 reduce
+  to one mechanism (ground truth is raw-id-only, the collapsed frame is
+  representative-id-only — the other three hypothesised causes measured
+  zero), and found 3 canonical tracks that would carry conflicting playlist
+  labels if naively remapped — duplicate uploads of one song, independently
+  filed into two playlists by the user, confirmed by checking all three, not
+  a canonicalisation over-merge. Part 1 (`canonical.raw_to_canonical_map()`,
+  `cluster_eval.canonical_ground_truth()`, Decisions table): fixed the join
+  direction (raw → canonical) and the conflict rule (drop the whole
+  canonical track, no tiebreak). Denominator: 438 → 480. Invariance check
+  (non-negotiable per the brief): pinned eval
+  (`--split 2026-06-01 --test-end 2026-07-01 -k 50 --half-life 14`)
+  byte-identical before and after, and also byte-identical to the
+  pre-existing `reports/eval_invariance_minsamples.txt` snapshot — ground
+  truth feeds coherence metrics only. Part 2
+  (`scripts/ground_truth_before_after.py`, `reports/ground_truth_ids.md`):
+  re-measured ARI/NMI/purity for all three modes under all three noise
+  conventions, before and after, against seven correctness gates that all
+  reproduce already-published figures exactly. Two things a future session
+  would otherwise have to rediscover: the brief's own cited "0.179 gap at
+  36e3b5a" traces to **stale, published README figures** that predate the
+  `normalise_title` fix, not `min_samples_sweep.md`'s own §2 measurement
+  (0.6655/0.3661, gap 0.2994) — the two numbers look like they should agree
+  and do not, for a documented reason, not a bug. And item 10's
+  `single_cluster` flip (0.145 vs 0.185) reproduces exactly (0.1453/0.1846)
+  but its survival against measured structural noise depends on which
+  `min_samples` the noise band is taken from — it clears the band at this
+  project's own `min_samples=2`, not the worst-case band across every value
+  tested (dominated by a regime break at `min_samples=10` this project does
+  not run at). README untouched throughout, per the brief's own scope — that
+  is separate work, after these numbers settle. 509 tests (508 passing, 1
+  pre-existing failure unrelated to this brief and confirmed present on a
+  clean checkout too — `test_dormancy.py`'s real-database test is
+  wall-clock-dependent and had already decayed past its threshold before
+  this brief started).
 
 ### Known open items
 
@@ -329,6 +368,16 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
    table has gone stale from an unrelated fix — the pattern this item's
    own text already called out as "out of scope... gets its own" is now
    two-for-two; still not built (see item 9).
+
+   **Stale a third time as of 2026-09-17, for a different reason: the 438
+   ground-truth pool this table's ARI is computed against is now 480** —
+   the raw/canonical ground-truth join fix (Decisions table; item 11 below)
+   changed the denominator, not the clustering. `reports/ground_truth_ids.md`
+   re-measured ARI/NMI/purity for all three modes under the new pool: same
+   `exclude`-convention winner (`title_artist`), gap over `title_genre`
+   widened slightly (0.2994 → 0.3196). Not folded into this table or the
+   README for the same reason as the second staleness — Udit's call, not a
+   ground-truth-fix commit's to make unilaterally.
 7. **A completed write can be invisible — the observability gap is now
    closed, the root cause is not.** (2026-09-15) A `--commit` write
    completed successfully — it produced the Lil Baby/Lil Peep/Chris Brown and
@@ -406,29 +455,50 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
     of convention. Once chosen, item 6's table (already stale for other
     reasons) should be re-measured under it in the same pass, not a
     separate one.
-11. **Three smaller findings from the same external review, confirmed and
-    deliberately left unfixed (non-goals of the brief that found them,
+
+    **2026-09-17: the 0.145/0.185 flip reproduces exactly, and is now
+    further qualified, not just re-confirmed.** `reports/ground_truth_ids.md`
+    independently re-measured it after the ground-truth join fix (item 11)
+    — 0.1453/0.1846 — and additionally checked it against
+    `reports/min_samples_sweep.md`'s structural noise band: the flip clears
+    the band measured at this project's own `min_samples=2`, but not the
+    (larger) worst-case band across every `min_samples` value tested, which
+    is dominated by `title_artist`'s own one-off bimodal regime break at
+    `min_samples=10` — a value this project does not run at. Read as fragile
+    rather than as a large, settled reversal either way. The 438-track pool
+    quoted above is also now stale for an unrelated reason: after the
+    ground-truth join fix it is 480.
+11. **Two of three smaller findings from the same external review remain
+    deliberately unfixed (non-goals of the brief that found them,
     2026-09-16) — do not re-investigate, only re-open if the convention
-    changes underneath them.** `cluster_eval.py`'s ground truth holds raw
-    `playlist_tracks` video ids while the clustered frame holds canonical
-    ones; canonical collapse silently drops 48 of 486 ground-truth music
+    changes underneath them. The third — the raw/canonical ground-truth id
+    mismatch — is fixed as of 2026-09-17; see the Decisions table.**
+    `redact.build_aliases` re-sorts its *entire* input whenever any new
+    playlist name appears, so a new name that sorts before an existing one
+    silently relabels everything after it — mechanism confirmed with a
+    worked example; no evidence found that it has actually fired against a
+    published figure (current mapping is one clean, internally-consistent
+    build over all 52 current names), but `data/playlist_aliases.json` is
+    gitignored with no history to audit further. `resolve.py`'s
+    `pending_video_ids` caches a `videos.list` response that omits a
+    requested id as `found=0` forever, with no retry path — real, but the
+    current 2,307 such rows match the original resolve run's
+    already-published count exactly, not a growing or anomalous number, and
+    confirming any specific row as a false negative would require spending
+    API quota this brief did not spend. `reports/eval_verification.md` (A3)
+    has the full original mechanism and numbers for all three, including the
+    now-fixed one — that analysis is still the diagnosis the fix was built
+    from.
+
+    **The fixed one, briefly:** `cluster_eval.py`'s ground truth held raw
+    `playlist_tracks` video ids while the clustered frame held canonical
+    ones; canonical collapse silently dropped 48 of 486 ground-truth music
     tracks whenever the raw id was not the surviving representative — the
-    438 quoted throughout item 10 and the README's ARI table is already
-    net of this, not a clean number. `redact.build_aliases` re-sorts its
-    *entire* input whenever any new playlist name appears, so a
-    new name that sorts before an existing one silently relabels
-    everything after it — mechanism confirmed with a worked example; no
-    evidence found that it has actually fired against a published figure
-    (current mapping is one clean, internally-consistent build over all 52
-    current names), but `data/playlist_aliases.json` is gitignored with no
-    history to audit further. `resolve.py`'s `pending_video_ids` caches a
-    `videos.list` response that omits a requested id as `found=0` forever,
-    with no retry path — real, but the current 2,307 such rows match the
-    original resolve run's already-published count exactly, not a growing
-    or anomalous number, and confirming any specific row as a false
-    negative would require spending API quota this brief did not spend.
-    `reports/eval_verification.md` (A3) has the full mechanism and numbers
-    for all three.
+    438 quoted throughout item 10 and README's ARI table was already net of
+    this, not a clean number. `canonical_ground_truth()` now maps raw ids to
+    canonical before the join and drops canonical tracks with conflicting
+    playlist labels (Decisions table; `reports/ground_truth_audit.md`,
+    `reports/ground_truth_ids.md`). New denominator: 480.
 
 ## Repo shape
 

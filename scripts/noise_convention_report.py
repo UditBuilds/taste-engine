@@ -8,6 +8,13 @@ it reports the same comparison under `coherence_by_convention()`'s other two
 conventions (noise as one cluster, noise as singletons) so the choice is
 visible instead of implicit. No HDBSCAN parameter changes.
 
+STALE if re-run (2026-09-17): this script still calls `playlist_ground_truth()`
+directly, the pre-fix raw ground truth - see `reports/ground_truth_audit.md`
+and the Decisions table entry on `cluster_eval.canonical_ground_truth()`. A
+re-run reproduces this script's own already-published numbers, not the
+current, fixed ARI/NMI/purity - use `scripts/ground_truth_before_after.py`
+for those.
+
 Run:  scripts/run.sh scripts/noise_convention_report.py
 """
 from __future__ import annotations

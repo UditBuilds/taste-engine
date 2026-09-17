@@ -63,6 +63,14 @@ difference).
 This script changes no HDBSCAN default. `config.py`/`embed.MIN_SAMPLES` are
 not touched.
 
+PARTIALLY STALE if re-run (2026-09-17): this script still calls
+`playlist_ground_truth()` directly, the pre-fix raw ground truth - see
+`reports/ground_truth_audit.md`. Only the "ARI-against-ground-truth"
+quantity (§8) is affected; the "swing" quantity this script's own headline
+(§3-§5) is built on is structural (clustering vs. clustering) and never
+touches ground truth at all, so it is unaffected and was reused as-is by
+`reports/ground_truth_ids.md`.
+
 Run:  scripts/run.sh scripts/min_samples_sweep.py
       scripts/run.sh scripts/min_samples_sweep.py --reps 10   # if 20 is slow
 """
