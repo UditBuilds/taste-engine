@@ -243,10 +243,11 @@ Named specifically, with code evidence, not as a generic "reads the DB":
 1. **`split_frames` dates the training frame's playlist membership,
    not the test frame's.** `evaluate.py:89-96`: `train` is scored with
    `playlist_as_of=split_date`; `test` is scored with no `playlist_as_of`
-   (defaults to `None`), which `classify_heuristic` (`classify.py:79-86`)
-   resolves to an **undated** `SELECT DISTINCT video_id FROM
-   playlist_tracks` — every row in the table, regardless of when it was
-   added. So a track's test-side `is_music` (and therefore whether its
+   (defaults to `None`). `classify_heuristic`'s if/else at `classify.py:79-86`
+   branches on that: `playlist_as_of=None` takes the `None` branch (line 80),
+   an **undated** `SELECT DISTINCT video_id FROM playlist_tracks` — every
+   row in the table, regardless of when it was added — while a dated caller
+   (line 82-85) would get `WHERE added_at <= ?`. So a track's test-side `is_music` (and therefore whether its
    test-window plays count as truth at all) reflects *today's* playlist
    curation at every one of the 9 split dates, not that split's own
    date. The code's own docstring calls this deliberate ("test... exists
@@ -311,10 +312,13 @@ its `is_music` label. They were confirmed `in reachable: False` under
 *both* conventions, not just the strict one.
 
 **Mechanism present, correctly characterized as a temporal leak in the
-truth set (not ordinary drift), and now actually exercised** — this isn't
-a hypothetical "489 rows exist but happen not to matter" (that was the
-weaker window-end framing); a live playlist addition inside a held-out
-window did flip `is_music` for two real, currently-played tracks. It
+truth set (not ordinary drift), and now actually exercised.** The weaker
+window-end framing (489–491 `playlist_tracks` rows added after each held-out
+window's close, none of which happened to matter) is genuine context for
+where most of the post-window curation sits, but it isn't the whole
+picture: measured against the correct cutoff, a live playlist addition
+*inside* a held-out window did flip `is_music` for two real,
+currently-played tracks. It
 happens to net to zero on the published nDCG@20 only because both flipped
 tracks are cold-start with respect to their split (first played inside the
 test window, never before it) — a track that was *also* a training
@@ -429,9 +433,12 @@ little training history this early in the dataset, not a fragile
 threshold). So: **the figures match; the mechanisms that could have made
 them not match are real, one of them is not merely hypothetical but was
 caught actually firing, and it was traced rather than assumed to have zero
-consequence for today's five headline numbers.** A future re-run producing
-a different number — whether from `len(usable)` shifting, from a
-playlist edit landing on a track that *is* a training candidate, or from
-new Takeout data — would not by itself indicate a defect in the pipeline;
-this report is what "unpinned, with one live leak mechanism measured and
-currently inert" looks like measured, not asserted.
+consequence for today's five headline numbers.** The held-out count of 3
+is stable under the current 9-split list and the current data specifically
+(Finding 1) — not a guarantee of the code, the same qualification Finding
+2's cold-start shielding carries. A future re-run producing a different
+number — whether from `len(usable)` shifting, from a playlist edit landing
+on a track that *is* a training candidate, or from new Takeout data —
+would not by itself indicate a defect in the pipeline; this report is what
+"unpinned, with one live leak mechanism measured and currently inert"
+looks like measured, not asserted.
