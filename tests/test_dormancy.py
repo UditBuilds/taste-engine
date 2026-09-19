@@ -308,7 +308,7 @@ class TestAgainstRealDatabase:
         qualify, just under different ids (5/12/36) - see
         reports/normalise_title_fix.md.
         """
-        as_of = pd.Timestamp.now(tz="UTC")
+        as_of = AS_OF
         _, frame_excl, _ = d.build_frames(db, as_of=as_of)
         qualifying = d.qualifying_clusters(frame_excl)
         names = qualifying["name"].fillna("")
