@@ -106,18 +106,18 @@ class TestStripArtistFromTitle:
         result = strip_artist_from_title(float("nan"), "")
         assert result != result
 
-    def test_does_not_guard_a_nan_artist(self):
-        """Documents a real, separate gap found while verifying this fix,
-        deliberately NOT closed here: this brief's guard matches
-        normalise_title's pattern - the *title* side only (see its
-        docstring). A NaN *artist* still reaches `artist.lower()`
-        unguarded and raises AttributeError. Unreachable via either real
-        call site today - both always pass artist_from_channel's output,
-        which is never NaN - so this is reported, not fixed. See
-        reports/normalise_title_fix.md and reports/defect_audit.md.
+    def test_handles_nan_artist(self):
+        """Regression: the title-side NaN guard above (from
+        reports/normalise_title_fix.md) left a separate gap - a NaN
+        *artist* still reached `artist.lower()` unguarded and raised
+        AttributeError. Documented, deliberately unfixed as CLAUDE.md open
+        item 8 (unreachable via either real call site today - both always
+        pass artist_from_channel's output, which is never NaN). Closed by
+        briefs/portability_defects.md Part A: same contract as a missing
+        artist (test_handles_missing_artist above) - the title comes back
+        unchanged rather than crashing. See reports/nan_guard_fix.md.
         """
-        with pytest.raises(AttributeError):
-            strip_artist_from_title("Some Title", float("nan"))
+        assert strip_artist_from_title("Some Title", float("nan")) == "Some Title"
 
 
 class TestCorpus:

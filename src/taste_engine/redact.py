@@ -78,7 +78,13 @@ def aliases_for(conn: sqlite3.Connection, refresh: bool = False) -> dict[str, st
 
 def alias(name, mapping: dict[str, str] | None = None) -> str:
     """Pseudonym for one playlist title. Unknown names never leak through."""
-    if name is None:
+    # `name is None` alone misses a float NaN (`nan is None` is False), which
+    # then fell through to str(name) -> the literal string "nan", looked up
+    # and missed, and silently returned the "unknown name" fallback instead
+    # of "(none)". Same idiom embed.normalise_title/artist_from_channel and
+    # canonical.canonical_key already use for this - matched here rather
+    # than a second convention. See reports/nan_guard_fix.md.
+    if name is None or name != name:
         return "(none)"
     mapping = load_aliases() if mapping is None else mapping
     return mapping.get(str(name), PREFIX + "?")

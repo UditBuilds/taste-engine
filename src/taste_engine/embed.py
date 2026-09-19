@@ -102,12 +102,14 @@ def strip_artist_from_title(title: str, artist: str) -> str:
     Dropping the channel is not enough: most titles are written
     'Travis Scott - MY EYES', so the artist survives inside the title itself.
     """
-    # Same NaN guard as normalise_title/artist_from_channel, defensive here:
-    # both call sites already pass a normalise_title()-cleaned string, so a
-    # raw NaN title has never reached this function in practice - but the
-    # type hint promises `str`, and a future direct caller would otherwise
-    # hit AttributeError on title.lower() below rather than an empty string.
-    if not artist or not title or title != title:
+    # Same NaN guard as normalise_title/artist_from_channel, on both sides
+    # now - title was already covered; artist was not, and artist.lower()
+    # below would raise AttributeError on a float NaN. Still defensive: both
+    # real call sites pass artist_from_channel's output, which is never NaN,
+    # so this remains unreached in practice - but the type hint promises
+    # `str`, and a future direct caller would otherwise crash instead of
+    # falling back to `title`. See reports/nan_guard_fix.md.
+    if not artist or not title or title != title or artist != artist:
         return title
     lowered, prefix = title.lower(), artist.lower()
     if lowered.startswith(prefix):

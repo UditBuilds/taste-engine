@@ -310,6 +310,27 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
   clean checkout too — `test_dormancy.py`'s real-database test is
   wall-clock-dependent and had already decayed past its threshold before
   this brief started).
+- **NaN guard gaps in `redact.alias()` and `embed.strip_artist_from_title()`
+  fixed (2026-09-19), `briefs/portability_defects.md` Part A, committed
+  alone before any other part of that brief started.** Closes two of open
+  item 8's three entries: `alias()`'s `name is None` guard now also catches
+  a float NaN (same `x != x` idiom as `normalise_title`/
+  `artist_from_channel`/`canonical.canonical_key`, not a second
+  convention), and `strip_artist_from_title()`'s artist-side guard closes
+  the gap its own title-side fix (`029319e`) deliberately left open.
+  Measured, not assumed: 0 of 2,918 canonical tracks' `embed_text` changed
+  in any of the three corpus modes (structurally guaranteed —
+  `artist_from_channel` never returns NaN, so the new artist-side branch is
+  unreachable via `build_corpus` today), 0 of the playlist names currently
+  in the database (52 via the SQL path, 58 via the pandas path
+  `scripts/build_notebook.py` uses) are actually NaN — so the `alias()` fix
+  is defensive/latent, not currently firing — and the full 3-mode ×
+  3-convention ARI/NMI/purity table on the 480-track ground-truth pool is
+  byte-identical before and after, independently cross-checked against
+  `reports/ground_truth_ids.md`'s already-published pool=480 figures (all 9
+  "after" rows match exactly). Full writeup: `reports/nan_guard_fix.md`.
+  513 tests (512 passing, 1 pre-existing `test_dormancy.py` failure,
+  unrelated and unchanged by this fix — Part B of the same brief).
 
 ### Known open items
 
@@ -412,6 +433,18 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
    session fixed in that file's `_modal()`, as a separate, untouched
    `Counter`. Full inventory, including what was checked and ruled out:
    `reports/defect_audit.md`.
+
+   **2026-09-19: the first two closed.** `briefs/portability_defects.md`
+   Part A fixed `redact.alias()`'s NaN guard and
+   `embed.strip_artist_from_title()`'s artist-side guard, matching the
+   existing `x != x` idiom rather than introducing `pd.isna()` as a second
+   convention. Measured zero effect on any currently-published number
+   (0/2,918 `embed_text` changes, 0 of the current playlist names are NaN,
+   ARI/NMI/purity byte-identical across all three modes and conventions) —
+   both were latent/defensive gaps, not live bugs, and stay that way after
+   the fix. `reports/nan_guard_fix.md`. The third entry
+   (`scripts/genre_coverage.py`'s `label_counts` hash-seed tie-break)
+   remains open — out of scope for that brief.
 9. **A clustering change breaks any hardcoded assumption downstream of
    it, and this happened three ways from one fix in one session.**
    (2026-09-16) `embed.normalise_title`'s NaN fix (item 6, above) changed
