@@ -115,6 +115,7 @@ wrong number that looks fine.
 | `evaluate.split_frames`'s **training** frame dates `in_playlist` via `playlist_as_of=split_date`; its **test** frame stays undated (2026-09-16) | An external review found `classify.py`'s `in_playlist` had no date condition at all, and it reaches row membership of the frame a temporal hold-out clusters, not just an `is_music` label. Confirmed, and fixed — `classify()`/`scored_tracks()` take an optional `playlist_as_of` cutoff, `None` everywhere except this one call site, so the live write path and every other caller is unaffected. Measured zero actual impact at the pinned split and all 9 nested-tuning splits before *and* after fixing it (stash/re-run/pop, byte-identical eval output) — no track's `is_music` currently depends on a post-split playlist add — but an undated global in a temporal hold-out is wrong regardless of today's data, so it was fixed anyway. `test` was deliberately left undated: it is ground truth of what was actually played, not training input, and no leak was found on that side. `reports/eval_verification.md`. |
 | `cluster_eval`'s ground truth is mapped raw → canonical **before** the coherence join; a canonical track whose raw ground-truth members carry conflicting playlist labels is **dropped**, never a tiebreak (2026-09-17) | The raw/canonical id mismatch (item 11, below) silently dropped 48 of 486 ground-truth music tracks — `canonical_ground_truth()` fixes the join direction (raw → canonical, matching `clustered["video_id"]`, not the reverse) and reports the resulting denominator explicitly (438 → 480). Canonicalising surfaces 3 canonical tracks carrying two playlists' labels — this is a **data-quality exclusion, not a canonicalisation over-merge guard**: every conflict found is one song independently filed into two playlists by the user, not two different songs wrongly fused (`reports/ground_truth_audit.md`, Item 3, checked all three). Picking a winner by play count or recency would assert a single label the source data does not agree on, so the whole track is dropped instead. `reports/ground_truth_audit.md` (diagnosis), `reports/ground_truth_ids.md` (before/after across modes/conventions — the `title_artist`/`title_genre` gap still clears its noise band under `exclude`/`singletons` both before and after; the already-known `single_cluster` flip, item 10, persists but its margin depends on which `min_samples` the noise band is measured at). |
 | `scripts/genre_coverage.py`'s `EXPECTED_REDISCOVER_CLUSTER_SIZE` gate **dropped, not repinned or range-checked** (2026-09-19) | Item 9's premise — cluster size is time-invariant — is false against a clustering *code* change, only true against score/`as_of` drift; a reclustering (item 6/9, 2026-09-16) moved 492/84 → 490/86 and the hard assertion then blocked the script from running at all. Repinning to 490/86 just re-breaks on the next reclustering; a range check makes the wrong premise harder to falsify. Replaced with a `[drift]` observation that reports today's size against the historical figure and never stops the script. `briefs/portability_defects.md` Part C4. |
+| Evaluation's default noise convention is **`singletons`** (2026-09-19) | **`exclude` was rejected** because each mode self-selects its own denominator: under `exclude`, `title_artist` is graded on 261 of 480 tracks, `title` on 197, `title_genre` on 340 — the modes are not compared on the same set of tracks, the defect originally found 2026-09-16. **`single_cluster` was rejected** because it asserts a structure the algorithm explicitly declined to assert: HDBSCAN's `cluster == -1` means those points do not form a group, and grading them as one group penalises a claim the clustering never made. **`singletons` was adopted** because it grades all 480 tracks, keeps the denominator constant across modes, and treats an unplaced track as what it is — a track in no group with any other; it is the only one of the three that neither self-selects a denominator nor invents structure. Chosen with the full three-convention table already in hand (`reports/embedding_modes_pool480.md`), not before seeing it — full provenance note and consequences for the published figures in open item 10. |
 
 ### Cluster ids are not identifiers
 
@@ -522,6 +523,45 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
     rather than as a large, settled reversal either way. The 438-track pool
     quoted above is also now stale for an unrelated reason: after the
     ground-truth join fix it is 480.
+
+    **2026-09-19: closed — the default convention is `singletons`.**
+    `briefs/close_convention_decision.md`, built on
+    `reports/embedding_modes_pool480.md`'s already-published
+    three-convention table and that report's own new §5 (added by the
+    same brief): the `single_cluster` ARI flip is verified ARI-only, not
+    a general reversal — `title_artist` still leads `title_genre` on 8 of
+    the 9 metric × convention cells (ARI, NMI, purity × exclude,
+    single_cluster, singletons); the sole exception is ARI under
+    `single_cluster` itself. Recorded in the Decisions table above with
+    the reasoning as given: `exclude` rejected for self-selecting each
+    mode's own denominator (261/197/340 of 480 graded under
+    `title_artist`/`title`/`title_genre`); `single_cluster` rejected for
+    asserting a structure — one shared group — that HDBSCAN's own
+    `cluster == -1` explicitly declined to assert; `singletons` adopted
+    as the only convention that grades all 480 tracks under every mode
+    without inventing structure.
+
+    **Provenance, recorded honestly rather than conveniently:** the
+    reasoning above is outcome-independent — each rejection turns on a
+    property of the convention itself, not on which mode it favours. But
+    the decision was made with the full three-convention table already in
+    hand, not before it, and `singletons` is in fact the convention most
+    favourable to the claim the project wanted to make. Both are true at
+    once, and both are recorded; neither is allowed to imply the other
+    away.
+
+    **Consequences for what the README can now publish, not yet written
+    there — that rewrite is a separate session:** the headline
+    `title_artist` ARI becomes **0.4140** under `singletons`, replacing
+    the ~0.65 family of figures (0.6561 on the current pool) historically
+    published under `exclude` — a substantial reduction, expected, not a
+    regression to explain away. `title_artist` beats `title_genre` by
+    0.1601, clearing the noise band at 16.85× — defensible. `title_genre`
+    beats `title` by only 0.0606, which does **not** clear the noise band
+    (0.55×) — not defensible, consistent with the conclusion already
+    reached 2026-09-16. Under `exclude`, `title` leads `title_genre`
+    outright — the README's long-standing "`title_genre` beats `title`"
+    framing does not hold under `exclude` at all.
 11. **Two of three smaller findings from the same external review remain
     deliberately unfixed (non-goals of the brief that found them,
     2026-09-16) — do not re-investigate, only re-open if the convention

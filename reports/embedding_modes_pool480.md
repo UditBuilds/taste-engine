@@ -76,3 +76,31 @@ Part D of `briefs/portability_defects.md` - measurement only. README item 6's em
 
 
 **Summary, not a recommendation, derived directly from the tables above (every direction below is the computed `leader`, not an assumed one):** `title_artist` beats `title_genre` under `exclude`, `singletons` (all clearing the noise band); under the remaining convention(s) (`single_cluster`) `title_genre` leads instead (CLAUDE.md open item 10's known flip - see `reports/ground_truth_ids.md`'s Q1 for that flip's own margin against the worst-case noise band, thinner than the `min_samples=2` band used here). For `title_genre` vs. `title`: `title_genre` leads under `single_cluster`, `singletons`, clearing the noise band under `single_cluster` specifically; `title` itself leads under `exclude` - a direction the README's own historical framing ("title_genre beats title") does not hold under at all, not just narrowly. This project has been burned twice by a published table that outran the decision behind it (CLAUDE.md items 6 and 9) - the convention choice is Udit's, made with this table in hand, not assumed here a third time.
+
+## 5. Is the `single_cluster` ARI flip a real reversal, or an ARI-specific artifact?
+
+`briefs/close_convention_decision.md`. Everything in this section is derived from §1's table above - no new measurement, no re-clustering. Three checks were run against §1's own numbers, independently, before anything below was written; all three passed.
+
+### 5.1 The metric-by-metric picture under `single_cluster`
+
+| metric | title_artist | title_genre | leader |
+|---|---:|---:|---|
+| ARI | 0.1415 | 0.1683 | title_genre |
+| NMI | 0.4107 | 0.3347 | title_artist |
+| purity | 0.4417 | 0.3375 | title_artist |
+
+### 5.2 Verified: how many of the 9 metric x convention cells does `title_artist` lead?
+
+Computed directly from §1's table, all 3 metrics x all 3 conventions, `title_artist` vs. `title_genre`: **8 of 9**. The sole exception is ARI under `single_cluster` - the cell in 5.1 above. Every other cell (ARI under `exclude` and `singletons`; NMI and purity under all three conventions, including `single_cluster` itself) has `title_artist` leading.
+
+### 5.3 A candidate mechanism - unverified reasoning, not a measured result
+
+The following is offered as an explanation, not established by anything measured in this report or elsewhere: ARI is computed over agreeing and disagreeing *pairs* of points, so collapsing every noise point into one cluster (the `single_cluster` convention) creates a penalty that grows quadratically with how many tracks that mode left unplaced. `title_artist` leaves the most tracks unplaced of the two modes in this comparison - 261 of 480 graded under `exclude` (219 unplaced), against `title_genre`'s 340 graded (140 unplaced) - so it absorbs the largest share of that quadratic penalty specifically on the one metric (ARI) that is pairwise-defined. NMI and purity are not computed the same way and do not carry this penalty in the same form, which is offered as a candidate explanation for why they do not flip. This mechanism has not been isolated or tested independently of this correlational reading of §1's existing numbers.
+
+### 5.4 What this does and does not establish
+
+This shows the `single_cluster` ARI flip is not a consistent reversal across metrics - it is the one dissenting cell out of nine. It does **not** prove `title_artist` is better than `title_genre` under `single_cluster` on ARI specifically: on that one metric, under that one convention, `title_genre` genuinely leads (0.1683 vs. 0.1415), and that is not in dispute.
+
+### 5.5 Where the convention decision itself is recorded
+
+This section states a finding about the data only. The decision of which noise convention the evaluation uses by default is recorded in `CLAUDE.md`'s Decisions table and open item 10, not here.
