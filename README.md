@@ -700,22 +700,22 @@ three conventions' NMI and purity, and the noise-band check on both gaps:
 Why each variant fails:
 
 - **Bare titles** carry almost no semantic signal. The corpus is `TBH`,
-  `20 Min`, `Ready`, `Snooze`. MiniLM cannot group those, so 57% land in noise
-  and coverage reaches only 42%. The artist string was not crowding out the
-  signal; it *was* most of the signal.
-- **Genre labels are too coarse.** `topicCategories` returns 35 distinct tags
-  across 3,570 tracks, and the common ones dominate — `hip hop`, `pop`,
-  `electronic`, `rhythm and blues`. 95% of tracks carry at least one, so the
-  coverage is real; the resolution is not. Genre gives the encoder something
-  to hold onto, so
-  coverage is the best of the three at 63% and noise the lowest at 44%. But
-  the resulting 32 buckets are broad, and they cut across playlists the user
-  drew much more finely.
+  `20 Min`, `Ready`, `Snooze`. MiniLM cannot group those, so most land in
+  noise and only a minority reach a real cluster. The artist string was not
+  crowding out the signal; it *was* most of the signal.
+- **Genre labels are too coarse.** `topicCategories` returns 35 distinct tags,
+  and the common ones dominate — `hip hop`, `pop`, `electronic`, `rhythm and
+  blues`. 95% of tracks carry at least one, so the coverage is real; the
+  resolution is not. Genre gives the encoder something to hold onto, so
+  coverage is the best of the three modes and noise the lowest. But the
+  resulting buckets are broad, and they cut across playlists the user drew
+  much more finely.
 
 That is a genuine trade-off rather than a clean win, and worth stating as one:
 **genre clusters more tracks, artist clusters them more like the user would.**
 Alignment is the goal here, so `title_artist` stays the default; `mode=
-"title_genre"` is one argument away.
+"title_genre"` is one argument away. Current per-mode coverage and noise
+figures are in `reports/embedding_modes_pool480.md` §1.
 
 A separate, smaller correction landed with this re-measurement:
 `embed.artist_from_channel` had no guard against a NaN channel (`float('nan')`
