@@ -5,7 +5,7 @@ The README publishes a rediscovery result (nDCG@20 0.3312 vs. 0.1382 baseline,
 convergent secondary evidence — CLAUDE.md, the README's own prior text, two
 invariance files stating the number hadn't moved — and not to one committed
 artifact. This report is that artifact, produced by actually running the
-evaluation, twice, and recording what came back, including three findings
+evaluation, twice, and recording what came back, including four findings
 that qualify what a "match" means here.
 
 **Note on the brief itself:** the brief this report executes was pasted into
@@ -23,9 +23,10 @@ investigated further — noted here for the record.
   241.45s). Worth flagging rather than passing over silently: CLAUDE.md's
   own State section documents a *known* wall-clock-dependent failure in
   `test_dormancy.py` as of the last few briefs (508/509, 512/513-shaped
-  entries). That test passed clean in this run — the flakiness is
-  time-dependent and evidently didn't trigger today, not evidence the
-  underlying issue was fixed.
+  entries). It passed clean in this run. CLAUDE.md describes that failure
+  as time-dependent; whether that's specifically why it's passing now was
+  not independently re-checked here — recorded as an observation, not a
+  diagnosis.
 - Tree confirmed clean again after the suite ran, before proceeding.
 
 ## Provenance
@@ -72,9 +73,11 @@ before today (last ends 2026-08-31), so nothing is a partially-filled
 window. But the *data* those pinned windows are evaluated against is read
 live from `data/taste.db` at whatever it currently contains — this
 evaluation is **not pinned to a frozen snapshot**, and a different number on
-a future run would not by itself indicate a defect. See the three findings
-below for exactly which surfaces are live and what effect, if any, that
-currently has.
+a future run would not by itself indicate a defect. Said plainly, as the
+brief's own §4.6 asks: **this figure is a snapshot on a dataset that can
+grow, and it is not expected to be stable across runs at different
+times.** See the three findings below for exactly which surfaces are live
+and what effect, if any, that currently has.
 
 ## Raw output — run 1
 
@@ -222,13 +225,16 @@ training data (candidates=28); by 2026-03-01 there's still only 73
 candidates against 790 truth tracks. The candidate pool grows roughly
 monotonically as the training window lengthens, and it clears 20 reachable
 by a wide margin (232+) from 2026-04-01 onward and stays there. Because
-`plays` has a fixed start date and each later split only adds *more*
-training history, this shape — early splits too thin, later ones
-comfortably usable — is stable going forward; `len(usable)` moving to 6
-would need a 10th monthly split with similarly thin history to newly clear
-the bar, and moving to 7+ isn't structurally in view at all under the
-current 9-split, single-year list. n=3 is not fixed by the code, but it is
-not fragile either.
+`plays` currently has a fixed start date (2025-09-14) and each later split
+only adds *more* training history, this shape — early splits too thin,
+later ones comfortably usable — is stable **under the current 9-split list
+and the current data**, not as a guarantee of the code: a Takeout re-parse
+that extended history earlier, or `truth`/`reachable` shifting the other
+way at the margin, could change which splits clear the bar. Under what's
+on disk today, `len(usable)` moving to 6 would need a 10th monthly split
+with similarly thin history to newly clear the bar, and moving to 7+ isn't
+in view at all under the current list. n=3 is not fixed by the code, but
+it is not fragile against small data changes either.
 
 ## Finding 2 — three undated ("live") surfaces feed a nominally pinned evaluation
 
@@ -258,31 +264,69 @@ Named specifically, with code evidence, not as a generic "reads the DB":
    classification at every split that includes it, historical or not.
 
 **Measured effect at the three splits this headline actually uses**, rather
-than left as an unmeasured possibility: for each held-out split's test
-window, every video played in that window was classified two ways —
-currently (`playlist_as_of=None`, what the eval actually uses) and honestly
-dated (`playlist_as_of=<window end>`, what a temporally clean version would
-use) — and compared for `is_music` flipping True→False:
+than left as an unmeasured possibility — and measured against the *right*
+cutoff, not a convenient one. Two candidate cutoffs exist for "honestly
+dated": the test window's own close (`playlist_as_of=<window_end>`), or
+`split_date` itself, which is what the **training** side actually uses
+(`playlist_as_of=split_date`, `evaluate.py:91`). The first pass of this
+measurement used window-end and found zero flips at all three splits — but
+that cutoff is too lenient: it still credits any playlist addition that
+happened *during* the test window itself, which the train-side convention
+would not. Re-measured against `split_date`, the convention the codebase
+actually applies to the other half of the same split:
 
-| split | test window | videos played in window | `is_music` flips (leak-only → non-music) |
+| split | test window | videos played in window | `is_music` flips, current → dated at `split_date` |
 |---|---|---:|---:|
-| 2026-06-01 | [2026-06-01, 2026-07-01) | 2,843 | **0** |
-| 2026-07-01 | [2026-07-01, 2026-07-31) | 3,350 | **0** |
-| 2026-08-01 | [2026-08-01, 2026-08-31) | 3,008 | **0** |
+| 2026-06-01 | [2026-06-01, 2026-07-01) | 2,843 | 0 |
+| 2026-07-01 | [2026-07-01, 2026-07-31) | 3,350 | 0 |
+| 2026-08-01 | [2026-08-01, 2026-08-31) | 3,008 | **2** |
 
-Zero, across all three. This is not because there was nothing to leak:
-489–491 `playlist_tracks` rows were added after each of these three
-windows' close (a single batch on 2026-09-13, matching the "Lofi Japan..."
-/ "Liked videos" playlists found in Finding 3 below) — real, recent
-additions exist, they simply don't correspond to any video whose *only*
-`is_music` signal is `in_playlist`, among videos actually played in these
-three windows. **Mechanism present and correctly characterized as a
-temporal leak in the truth set; measured effect on this specific headline
-is zero.** This is the same shape CLAUDE.md already documents for the
-train-side version of this same undated-`in_playlist` defect (fixed
-anyway, because "an undated global in a temporal hold-out is wrong
-regardless of today's data") — the test side remains a live, unmeasured-until-now
-mechanism that happens to net to zero here, not a settled non-issue.
+Two flips, both at the 2026-08-01 split: `e3pof7pp4kw` (added to "Watch
+later" on 2026-08-11) and `MeplZvhGkQI` (added to "Career" on 2026-08-18) —
+both additions land *inside* that split's own test window, after
+`split_date` (2026-08-01), which is exactly the leak Finding 2 names: test
+frame `is_music` depending on when-added information the training frame
+would not be allowed to use if it were scoring the same window.
+
+**Does either flip move the headline?** Measured directly by rebuilding
+`evaluate_rediscovery`'s 2026-08-01 computation with the test frame dated
+at `split_date` instead of current:
+
+| | truth | reachable | most_played ndcg@20 | score ndcg@20 |
+|---|---:|---:|---:|---:|
+| current (as published) | 687 | 365 | 0.1718 | 0.3794 |
+| dated at `split_date` (strict) | 685 | 365 | 0.1718 | 0.3794 |
+
+`truth` drops by exactly 2 (the two flipped tracks leave the truth set);
+`reachable` — the only quantity `ndcg_at_k` actually scores against — is
+unchanged, and both strategies' nDCG@20 are bit-for-bit identical. The
+reason is structural, not coincidental: `reachable = truth_ids ∩
+candidate_ids`, and `candidates` is drawn from the **training** window
+(everything played strictly before `split_date`). Both flipped videos'
+*entire* play history is inside the test window itself — `e3pof7pp4kw` has
+1 play, ever, on 2026-08-22; `MeplZvhGkQI` has 2 plays, ever, on 2026-08-17
+and 2026-08-18 — neither was ever played before the split, so neither was
+ever a training candidate, so neither could be `reachable` regardless of
+its `is_music` label. They were confirmed `in reachable: False` under
+*both* conventions, not just the strict one.
+
+**Mechanism present, correctly characterized as a temporal leak in the
+truth set (not ordinary drift), and now actually exercised** — this isn't
+a hypothetical "489 rows exist but happen not to matter" (that was the
+weaker window-end framing); a live playlist addition inside a held-out
+window did flip `is_music` for two real, currently-played tracks. It
+happens to net to zero on the published nDCG@20 only because both flipped
+tracks are cold-start with respect to their split (first played inside the
+test window, never before it) — a track that was *also* a training
+candidate and suffered the same kind of flip would not be shielded the
+same way, and this measurement does not rule that out at other splits or
+future data states, only confirms it isn't happening at these three,
+today. This is the same shape CLAUDE.md already documents for the
+train-side version of this defect (fixed anyway, because "an undated
+global in a temporal hold-out is wrong regardless of today's data") — the
+test side remains live and, per this measurement, not merely
+theoretically leaky but actually caught leaking once, with a traceable
+reason it didn't propagate to the metric.
 
 ## Finding 3 — `playlist_tracks` state, and the 2026-09-16 listening test
 
@@ -369,18 +413,25 @@ and split dates are pinned, but the underlying data is not: three undated
 surfaces (test-side `in_playlist`, `in_library`, and `video_metadata`) feed
 this pinned computation from whatever `data/taste.db` currently contains,
 not from a frozen snapshot. Measured directly rather than left as a
-caveat — none of the three currently flips any video's `is_music` for
-tracks actually played within the three held-out test windows (zero
-flips, checked individually per split, against 489–491 real, recently
-added `playlist_tracks` rows that exist but don't happen to matter here).
-The held-out count of 3 is similarly not guaranteed by the code, but is
-structurally stable under the current 9-split list for a legible reason
-(the four dropped splits fail on too little training history this early in
-the dataset, not on a fragile threshold). So: **the figures match, the
-mechanisms that could have made them not match are real and were checked
-rather than assumed, and today none of them are exerting any measured
-effect.** A future re-run producing a different number — whether from
-`len(usable)` shifting, from a genuinely leak-causing playlist edit, or
-from new Takeout data — would not by itself indicate a defect in the
-pipeline; this report is what "unpinned but currently inert" looks like
-measured, not asserted.
+caveat — and the measurement found a live instance, not a clean bill of
+health: under the cutoff that actually matches the training side's own
+convention (`playlist_as_of=split_date`, not window-end), a playlist
+addition inside the 2026-08-01 test window did flip `is_music` for two
+real, currently-played tracks (Finding 2). It left nDCG@20 at that split
+bit-for-bit unchanged only because both tracks are cold-start with respect
+to their split — never played before it, so never in the candidate pool
+`reachable` is drawn from, regardless of `is_music`. That is a traced
+reason specific to these two tracks, not a structural guarantee the
+mechanism is inert in general. The held-out count of 3 is similarly not
+guaranteed by the code, but is structurally stable under the current
+9-split list for a legible reason (the four dropped splits fail on too
+little training history this early in the dataset, not a fragile
+threshold). So: **the figures match; the mechanisms that could have made
+them not match are real, one of them is not merely hypothetical but was
+caught actually firing, and it was traced rather than assumed to have zero
+consequence for today's five headline numbers.** A future re-run producing
+a different number — whether from `len(usable)` shifting, from a
+playlist edit landing on a track that *is* a training candidate, or from
+new Takeout data — would not by itself indicate a defect in the pipeline;
+this report is what "unpinned, with one live leak mechanism measured and
+currently inert" looks like measured, not asserted.
