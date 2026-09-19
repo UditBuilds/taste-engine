@@ -166,6 +166,13 @@ CREATE INDEX IF NOT EXISTS ix_ttl_artist
     ON track_tag_lookups(source, query_variant, query_artist);
 """
 
+# Bumped whenever SCHEMA gains a table/index an existing database might be
+# missing. Gates re-running executescript (below), not the CREATE ... IF NOT
+# EXISTS semantics inside it, which are unchanged and still the real safety
+# net - this only skips re-parsing ~160 lines of DDL once a database is
+# already at the current version, via PRAGMA user_version.
+SCHEMA_VERSION = 1
+
 # Phase 4 tables were reshaped after Phase 3 shipped. They are write-back
 # bookkeeping, empty until the first playlist is written, so an in-place
 # rebuild is safe — but only while they are actually empty.
@@ -201,8 +208,15 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL lets a reader (e.g. a report script) run alongside a writer instead
+    # of blocking; busy_timeout retries a few seconds on a locked database
+    # instead of raising immediately. Neither changes what any query returns.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     _migrate_phase4(conn)
-    conn.executescript(SCHEMA)
+    if conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+        conn.executescript(SCHEMA)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return conn
 
 
