@@ -14,7 +14,7 @@ the magnitude has moved every single time.
 
 That second paragraph is the point of this repository. The interesting artifact here is
 not the number — it's the record of how many times the number was wrong, how it was
-caught, and what was measured to close each question. Four separate directions were
+caught, and what was measured to close each question. Five separate directions were
 investigated and killed by measurement rather than abandoned quietly. They're documented
 below with the same weight as the result.
 
@@ -40,6 +40,14 @@ replacement. Track-level tag coverage came back at 640 of 2,918 (21.9%), far bel
 a per-track signal needs to be usable. Kept in the repo as a documented negative
 result. The artist-level fallback was rejected separately, because it would have
 reintroduced the artist-shapedness the whole exercise was meant to escape.
+
+**Cluster shape (`reports/listening_test.md`).** Hypothesis: single-artist clusters
+surface fewer genuinely forgotten tracks than mixed ones. Two playlists were written
+live to my account and marked track by track. The single-artist cluster scored 7 of 11
+forgotten; the genuinely mixed cluster scored 3 of 13. The hypothesis was refuted by its
+own test, and with it the whole direction it implied — making clusters less
+artist-shaped would not have fixed what it was aimed at. A third arm was written and
+never marked; the report says so.
 
 **Dormancy signals (`reports/dormancy_probe.md`).** Hypothesis: rank by how long a track
 has been unplayed. The Takeout export spans 362 days and 61.8% of the library has exactly
