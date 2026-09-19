@@ -46,9 +46,4 @@ print(f"  lift                  : {out['lift']:+.1%}")
 print(f"  splits won            : {out['wins']}/{out['n']}")
 print(f"  sign-test p           : {out['sign_test_p']:.3f}")
 print()
-if out["significant"]:
-    print("  VERDICT: improvement over the most-played baseline, p < 0.05.")
-else:
-    print("  VERDICT: no significant improvement over the most-played baseline.")
-    print(f"           {out['lift']:+.1%} on {out['n']} held-out splits is not")
-    print("           distinguishable from chance at this sample size.")
+print("  VERDICT:", out["verdict"])

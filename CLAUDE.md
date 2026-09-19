@@ -592,6 +592,38 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
     canonical before the join and drops canonical tracks with conflicting
     playlist labels (Decisions table; `reports/ground_truth_audit.md`,
     `reports/ground_truth_ids.md`). New denominator: 480.
+12. **The rediscovery test frame's `in_playlist` reads current playlist
+    state, not split-date state — a temporal leak in the truth set, and it
+    has now been measured to actually fire, not just to exist in theory.**
+    (2026-09-19) The Decisions table's `evaluate.split_frames` entry fixed
+    this for **train** (`playlist_as_of=split_date`) and states "`test` was
+    deliberately left undated... and no leak was found on that side" — that
+    finding was about `is_music`'s effect on training-corpus membership,
+    not about the test frame's own truth set, and does not hold as broadly
+    as it reads. `split_frames` (`evaluate.py:89-96`) passes
+    `playlist_as_of=split_date` to `scored_tracks` for **train** but no
+    `playlist_as_of` at all for **test**, which defaults to `None` —
+    `classify_heuristic`'s `None` branch (`classify.py:79-86`, undated case
+    at line 80) issues `SELECT DISTINCT video_id FROM playlist_tracks` with
+    no date filter, every row regardless of when it was added. Measured:
+    at the 2026-08-01 held-out split, two tracks — added to "Watch later"
+    on 2026-08-11 and to "Career" on 2026-08-18, both inside that split's
+    own test window, both after `split_date` — flip `is_music` under the
+    training side's own convention (`playlist_as_of=split_date`) versus
+    current. Rebuilding `evaluate_rediscovery`'s nDCG@20 both ways left the
+    published rediscovery headline bit-for-bit unchanged, but only because
+    both flipped tracks are cold-start: their entire play history sits
+    inside the test window, so neither was ever in the training-window
+    candidate pool `reachable` is drawn from, regardless of `is_music`.
+    That is a traced reason specific to those two tracks, not a structural
+    guarantee the mechanism stays inert at other splits or under future
+    data. **Open, not fixed:** dating the test frame the way training
+    already is would re-run, and could move, the headline figure just
+    re-derived and committed as a primary artifact for the first time —
+    whether to fix it, and treating any resulting change as its own
+    finding rather than a side effect of a defect fix, is a call for a
+    future brief. Full mechanism, both measurements, and the metric-level
+    check: `reports/rediscovery_headline.md`.
 
 ## Repo shape
 

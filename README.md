@@ -8,9 +8,10 @@ similarity, and writes the resulting playlists back to my real YouTube account.
 
 On the rediscovery task — surfacing tracks I'd stopped playing, excluding my global
 top 50 — it scores nDCG@20 of 0.3312 against a 0.1382 baseline, a 139.7% improvement
-that held in all three held-out splits. **At n=3 that is p=0.125 and not statistically
-certifiable.** The direction has survived six successive corrections to the pipeline;
-the magnitude has moved every single time.
+(re-derived in `reports/rediscovery_headline.md`) that held in all three held-out
+splits. **At n=3 that is p=0.125 and not statistically certifiable.** The direction
+has survived six successive corrections to the pipeline; the magnitude has moved
+every single time.
 
 That second paragraph is the point of this repository. The interesting artifact here is
 not the number — it's the record of how many times the number was wrong, how it was
@@ -391,6 +392,9 @@ sign test's *best possible* p-value — a clean sweep, which this is — is
 **0.125**. No result at this sample size can reach p < 0.05; five held-out
 splits would be the minimum. The effect is large and consistent; the evidence
 is thin, and those are different claims.
+
+Reproduced byte-for-byte across two independent runs, with full provenance
+and follow-up findings on what could have moved it: `reports/rediscovery_headline.md`.
 
 The honest summary: *a +121% lift winning every held-out split, which this
 dataset is too small to certify.* Not "a 121% improvement", and not "no
@@ -1095,8 +1099,10 @@ It is public and built on one person's data, so:
 
 ## Known limitations
 
-- **The headline result is n=3.** Three held-out splits, p=0.125. The sign has been
-  stable across six pipeline corrections; the magnitude has not.
+- **The headline result is n=3.** Three held-out splits, p=0.125 — an outcome of
+  which splits clear the reachable≥20 bar (Apr–Aug do, Dec–Mar don't), not a chosen
+  sample size (`reports/rediscovery_headline.md`). The sign has been stable across
+  six pipeline corrections; the magnitude has not.
 - **No audio signal anywhere in the pipeline.** Clustering runs on sentence-transformer
   embeddings of `"{title} - {artist}"` text plus coarse `topicCategories`. Clusters come
   out artist-shaped because that is what the inputs describe. Spotify's audio-features
