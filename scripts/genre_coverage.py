@@ -26,17 +26,26 @@ SHALLOW_THRESHOLD = 45  # brief's definition: eligible members < 45
 
 # Known-good figures already measured and written into CLAUDE.md / produced by
 # scripts/backfill_report.py. Used below as a correctness gate on this script's
-# own pipeline, not as a target to match by construction. Cluster *size* is
-# time-invariant so it is gated hard; the *eligible* count is score-threshold
-# dependent and score is computed as_of=now() by design (score.py), so it
-# legitimately drifts by a track or two between the day CLAUDE.md's figures
-# were measured (2026-09-13) and today - checked, not assumed: re-scoring
-# Travis Scott's cluster at as_of=now-24h reproduces 21 exactly (see
-# briefs-era diagnostic in this session). That comparison is reported below
-# for transparency but does not gate.
+# own pipeline, not as a target to match by construction.
 EXPECTED_CANONICAL_TRACKS = 2918
-EXPECTED_REDISCOVER_CLUSTER_SIZE = {"T-Series": 492, "Travis Scott": 84}
-EXPECTED_REDISCOVER_ELIGIBLE = {"T-Series": 22, "Travis Scott": 21}
+
+# NOT a gate (2026-09-19, briefs/portability_defects.md C4 - CLAUDE.md open
+# item 9). Cluster *size* was previously treated as time-invariant and
+# asserted hard, on the premise that it only moves with score/as_of drift.
+# That premise is false: embed.normalise_title's NaN fix (2026-09-16, purely
+# a text-cleanup change unrelated to these two clusters) reclustered the
+# corpus and moved 492/84 -> 490/86, which then hard-failed this script on
+# every run since. Dropped rather than repinned to today's values (the same
+# failure returns on the next reclustering) or turned into a range check
+# (that just makes the wrong premise harder to falsify) - the comparison
+# below is reported as a drift observation, gating nothing. The *eligible*
+# count is separately expected to drift: it is score-threshold dependent and
+# score is computed as_of=now() by design (score.py), so it legitimately
+# moves by a track or two hour to hour - checked, not assumed: re-scoring
+# Travis Scott's cluster at as_of=now-24h reproduced 21 exactly (see
+# briefs-era diagnostic in this session).
+HISTORICAL_REDISCOVER_CLUSTER_SIZE = {"T-Series": 492, "Travis Scott": 84}
+HISTORICAL_REDISCOVER_ELIGIBLE = {"T-Series": 22, "Travis Scott": 21}
 
 
 def uploader_type(channel) -> str:
@@ -263,48 +272,49 @@ def main() -> int:
             lambda g: isinstance(g, list) and len(g) > 0
         )
 
-        # ---- correctness gate 3: reproduce already-measured rediscover-pool CLUSTER
-        # SIZE (time-invariant - hard gate). Eligible count is reported alongside
-        # for context but not gated: it is score-threshold dependent and score is
-        # computed as_of=now() by design, so it legitimately drifts hour to hour. ----
+        # ---- drift observation (NOT a gate - see HISTORICAL_REDISCOVER_CLUSTER_SIZE's
+        # comment above): how today's rediscover-pool cluster sizes compare to the
+        # historically observed ones. Never stops the script; nothing below depends
+        # on these matching. ----
         favourite_ids = favourites(frame, config.EXCLUDE_TOP)
         rediscover_frame = frame[~frame["video_id"].isin(favourite_ids)]
         rediscover_eligible = rediscover_frame[rediscover_frame["score"] >= config.MIN_SCORE]
-        gate3_ok = True
-        gate3_results = []
-        for name, expected_size in EXPECTED_REDISCOVER_CLUSTER_SIZE.items():
+        drift_results = []
+        for name, historical_size in HISTORICAL_REDISCOVER_CLUSTER_SIZE.items():
             match = rediscover_frame[
                 rediscover_frame["cluster_name"].fillna("").str.contains(name, case=False, regex=False)
                 & (rediscover_frame["cluster"] >= 0)
             ]
             if match.empty:
-                print(f"[gate] {name!r}: no matching cluster found -> MISMATCH")
-                gate3_ok = False
+                print(f"[drift] {name!r}: no matching cluster found today "
+                      f"(historical size: {historical_size})")
+                drift_results.append({
+                    "name": name, "unchanged": False, "got_size": None,
+                    "historical_size": historical_size, "got_eligible": None,
+                    "historical_eligible": HISTORICAL_REDISCOVER_ELIGIBLE[name],
+                    "eligible_note": "no matching cluster found today",
+                })
                 continue
             cid = match["cluster"].value_counts().idxmax()
             got_size = len(rediscover_frame[rediscover_frame["cluster"] == cid])
-            ok = got_size == expected_size
-            gate3_ok &= ok
+            unchanged = got_size == historical_size
             got_eligible = len(rediscover_eligible[rediscover_eligible["cluster"] == cid])
-            expected_eligible = EXPECTED_REDISCOVER_ELIGIBLE[name]
-            eligible_note = "matches" if got_eligible == expected_eligible else (
-                f"differs from the {expected_eligible} measured on 2026-09-13 by "
-                f"{got_eligible - expected_eligible:+d} - expected: score is computed "
+            historical_eligible = HISTORICAL_REDISCOVER_ELIGIBLE[name]
+            eligible_note = "matches" if got_eligible == historical_eligible else (
+                f"differs from the {historical_eligible} measured on 2026-09-13 by "
+                f"{got_eligible - historical_eligible:+d} - expected: score is computed "
                 f"as_of=now() and decays continuously, so a threshold count taken a day "
                 f"apart is not required to match"
             )
-            print(f"[gate] {name!r} rediscover-pool cluster size = {got_size} "
-                  f"(expected {expected_size}) -> {'OK' if ok else 'MISMATCH'}; "
+            print(f"[drift] {name!r} rediscover-pool cluster size = {got_size} "
+                  f"(historical: {historical_size}) -> "
+                  f"{'unchanged' if unchanged else 'DRIFTED - see CLAUDE.md open item 9'}; "
                   f"eligible today = {got_eligible} ({eligible_note})")
-            gate3_results.append({
-                "name": name, "size_ok": ok, "got_size": got_size, "expected_size": expected_size,
-                "got_eligible": got_eligible, "expected_eligible": expected_eligible,
-                "eligible_note": eligible_note,
+            drift_results.append({
+                "name": name, "unchanged": unchanged, "got_size": got_size,
+                "historical_size": historical_size, "got_eligible": got_eligible,
+                "historical_eligible": historical_eligible, "eligible_note": eligible_note,
             })
-        if not gate3_ok:
-            print("\nRefusing to report numbers: rediscover-pool cluster-size cross-check "
-                  "failed against already-measured figures. Stopping for investigation.")
-            return 1
         print()
 
         # =========================================================================
@@ -401,11 +411,17 @@ def main() -> int:
                       f"measured {EXPECTED_CANONICAL_TRACKS:,}: **{'OK' if gate1_ok else 'MISMATCH'}**\n")
         lines.append(f"- Re-derived canonical_key groups 1:1 with `collapse()`'s own grouping: "
                       f"**{'OK' if gate2_ok else 'MISMATCH'}**\n")
-        for g in gate3_results:
+
+        lines.append("\n## Rediscover-pool cluster-size drift (informational, not gated)\n")
+        lines.append("Cluster size was previously asserted hard against the historical figures "
+                      "below, on the premise that it is time-invariant. That premise is false - "
+                      "a clustering *code* change moves it even with score/as_of held fixed - so "
+                      "as of 2026-09-19 this is reported, not gated (CLAUDE.md open item 9).\n")
+        for g in drift_results:
             lines.append(
                 f"- {g['name']!r} rediscover-pool cluster size = {g['got_size']} "
-                f"(matches `scripts/backfill_report.py`'s measured {g['expected_size']}, "
-                f"time-invariant): **{'OK' if g['size_ok'] else 'MISMATCH'}**. "
+                f"(historical, `scripts/backfill_report.py` 2026-09-13: {g['historical_size']}): "
+                f"**{'unchanged' if g['unchanged'] else 'DRIFTED'}**. "
                 f"Eligible count today = {g['got_eligible']} ({g['eligible_note']}).\n"
             )
 

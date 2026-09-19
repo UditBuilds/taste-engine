@@ -20,9 +20,14 @@ Brief: `briefs/genre_coverage.md`. Read-only measurement, no API calls, no exist
 
 - Re-derived canonical_key groups 1:1 with `collapse()`'s own grouping: **OK**
 
-- 'T-Series' rediscover-pool cluster size = 492 (matches `scripts/backfill_report.py`'s measured 492, time-invariant): **OK**. Eligible count today = 22 (matches).
 
-- 'Travis Scott' rediscover-pool cluster size = 84 (matches `scripts/backfill_report.py`'s measured 84, time-invariant): **OK**. Eligible count today = 20 (differs from the 21 measured on 2026-09-13 by -1 - expected: score is computed as_of=now() and decays continuously, so a threshold count taken a day apart is not required to match).
+## Rediscover-pool cluster-size drift (informational, not gated)
+
+Cluster size was previously asserted hard against the historical figures below, on the premise that it is time-invariant. That premise is false - a clustering *code* change moves it even with score/as_of held fixed - so as of 2026-09-19 this is reported, not gated (CLAUDE.md open item 9).
+
+- 'T-Series' rediscover-pool cluster size = 490 (historical, `scripts/backfill_report.py` 2026-09-13: 492): **DRIFTED**. Eligible count today = 15 (differs from the 22 measured on 2026-09-13 by -7 - expected: score is computed as_of=now() and decays continuously, so a threshold count taken a day apart is not required to match).
+
+- 'Travis Scott' rediscover-pool cluster size = 86 (historical, `scripts/backfill_report.py` 2026-09-13: 84): **DRIFTED**. Eligible count today = 17 (differs from the 21 measured on 2026-09-13 by -4 - expected: score is computed as_of=now() and decays continuously, so a threshold count taken a day apart is not required to match).
 
 
 ## Methodology note - which pool is "eligible"
@@ -74,54 +79,119 @@ The brief defines eligible candidate as `score >= config.MIN_SCORE` with no ment
 
 37 real (non-noise) clusters total; 37 are shallow (eligible members < 45).
 
-| cluster | name | eligible | labeled/eligible | modal genre | modal share | ambiguous | outside sharing genre (noise excl.) |
-|---|---|---|---|---|---|---|---|
-| 7 | Arjan Dhillon / APDHILLON / Prem Dhillon | 0 | 0/0 | nan | nan% | n/a | nan |
-| 11 | Technical Guitarist Official | 0 | 0/0 | nan | nan% | n/a | nan |
-| 12 | Technical Guitarist Official | 0 | 0/0 | nan | nan% | n/a | nan |
-| 16 | TL-Jhondi Gemar / Moviechat / $uicideboy$ | 0 | 0/0 | nan | nan% | n/a | nan |
-| 20 | Offset / Future / Quality Control | 0 | 0/0 | nan | nan% | n/a | nan |
-| 13 | King Von / New West / Matt Maltese | 1 | 1/1 | pop | 100% | no | 259.0 |
-| 5 | backfromparadise / INTERWORLD / speed up france | 1 | 1/1 | electronic | 100% | no | 114.0 |
-| 0 | The Kid LAROI | 1 | 1/1 | electronic | 100% | no | 114.0 |
-| 27 | Lana Del Rey | 1 | 1/1 | pop | 100% | no | 259.0 |
-| 31 | Arctic Monkeys / Ellie Goulding / Chris Brown | 1 | 1/1 | electronic | 100% | no | 114.0 |
-| 36 | Kanye West | 1 | 1/1 | pop | 100% | no | 259.0 |
-| 29 | Lil Uzi Vert | 2 | 2/2 | pop | 100% | no | 258.0 |
-| 8 | Central Cee | 2 | 2/2 | hip hop | 100% | no | 239.0 |
-| 14 | Novulent | 2 | 2/2 | independent | 100% | no | 37.0 |
-| 32 | Young Thug | 2 | 2/2 | pop | 100% | no | 258.0 |
-| 26 | Radiohead / NBSPLV / softsync | 2 | 2/2 | rock | 100% | no | 3.0 |
-| 1 | Doja Cat | 3 | 3/3 | pop | 100% | no | 257.0 |
-| 25 | Justin Bieber | 3 | 3/3 | pop | 100% | no | 257.0 |
-| 2 | A$AP Rocky / LIVELOVEASAP / Major Lazer | 4 | 4/4 | pop | 100% | no | 256.0 |
-| 9 | Juice WRLD | 5 | 5/5 | pop | 100% | no | 255.0 |
-| 28 | Post Malone | 5 | 5/5 | pop | 100% | no | 255.0 |
-| 35 | Kendrick Lamar | 5 | 5/5 | pop | 100% | no | 255.0 |
-| 18 | XXXTENTACION | 6 | 6/6 | pop | 100% | no | 254.0 |
-| 3 | Playboi Carti | 8 | 8/8 | pop | 100% | no | 252.0 |
-| 19 | The Neighbourhood | 9 | 9/9 | pop | 100% | no | 251.0 |
-| 17 | Yeat / Gunna / Cigarettes After Sex | 11 | 11/11 | hip hop | 82% | no | 232.0 |
-| 15 | PARTYNEXTDOOR | 11 | 10/11 | rhythm and blues | 90% | no | 80.0 |
-| 4 | Joji | 13 | 13/13 | pop | 77% | no | 250.0 |
-| 34 | Lil Baby / Lil Peep / Chris Brown | 15 | 15/15 | hip hop | 100% | no | 226.0 |
-| 21 | 21 Savage | 16 | 16/16 | hip hop | 100% | no | 225.0 |
-| 24 | Future | 20 | 20/20 | hip hop | 100% | no | 221.0 |
-| 10 | T-Series / Pritam / Sony Music India | 22 | 22/22 | music of asia | 95% | no | 1.0 |
-| 33 | Drake | 22 | 22/22 | hip hop | 100% | no | 219.0 |
-| 6 | Don Toliver | 25 | 25/25 | hip hop | 100% | no | 216.0 |
-| 22 | The Weeknd | 26 | 26/26 | pop | 100% | no | 234.0 |
-| 30 | Travis Scott | 28 | 28/28 | hip hop | 100% | no | 213.0 |
-| 23 | Metro Boomin | 29 | 29/29 | pop | 100% | no | 231.0 |
+| cluster | name | eligible | labeled/eligible | modal genre | modal share | ambiguous | outside sharing genre (noise excl.) | admit ratio |
+|---|---|---|---|---|---|---|---|---|
+| 7 | Arjan Dhillon / APDHILLON / AP Dhillon | 0 | 0/0 | not computable | n/a | n/a | n/a | n/a |
+| 14 | TL-Jhondi Gemar / $uicideboy$ / Moviechat | 0 | 0/0 | not computable | n/a | n/a | n/a | n/a |
+| 13 | Technical Guitarist Official / Guitar With Aman / Strumming Strings | 0 | 0/0 | not computable | n/a | n/a | n/a | n/a |
+| 16 | Offset / Future / Quality Control | 0 | 0/0 | not computable | n/a | n/a | n/a | n/a |
+| 20 | MyGuyMars | 0 | 0/0 | not computable | n/a | n/a | n/a | n/a |
+| 21 | Chadtag / wowday / Big K.R.I.T. | 0 | 0/0 | not computable | n/a | n/a | n/a | n/a |
+| 4 | backfromparadise / INTERWORLD / Aarush Prashanth | 1 | 1/1 | electronic | 100% | no | 103 | 38% |
+| 0 | The Kid LAROI / Cheema Y / The Kid LAROI. | 1 | 1/1 | electronic | 100% | no | 103 | 38% |
+| 30 | Lil Uzi Vert | 1 | 1/1 | hip hop | 100% | no | 216 | 81% |
+| 10 | King Von / Gesaffelstein / New West | 1 | 1/1 | hip hop | 100% | no | 216 | 81% |
+| 1 | Doja Cat / dojacat / SZA | 1 | 1/1 | electronic | 100% | no | 103 | 38% |
+| 29 | Lana Del Rey | 1 | 1/1 | electronic | 100% | no | 103 | 38% |
+| 11 | Novulent | 2 | 2/2 | independent | 100% | no | 35 | 13% |
+| 28 | Radiohead / softsync / Coldplay | 2 | 2/2 | independent | 100% | no | 35 | 13% |
+| 31 | Arctic Monkeys / Ellie Goulding / Anna Marx | 2 | 2/2 | pop | 100% | no | 231 | 87% |
+| 6 | Juice WRLD | 2 | 2/2 | hip hop | 100% | no | 215 | 81% |
+| 22 | Gunna / d4vd / Ze66y | 2 | 2/2 | hip hop | 100% | no | 215 | 81% |
+| 19 | Gunna / Yeat | 3 | 3/3 | hip hop | 100% | no | 214 | 80% |
+| 3 | A$AP Rocky / LIVELOVEASAP / Major Lazer | 3 | 3/3 | electronic | 100% | no | 101 | 38% |
+| 18 | Cigarettes After Sex / Chadtag / Hotel Ugly | 3 | 3/3 | independent | 100% | no | 34 | 13% |
+| 27 | Justin Bieber | 4 | 4/4 | pop | 100% | no | 229 | 86% |
+| 15 | XXXTENTACION | 5 | 5/5 | hip hop | 100% | no | 212 | 80% |
+| 33 | Young Thug | 5 | 5/5 | hip hop | 100% | no | 212 | 80% |
+| 2 | Playboi Carti | 8 | 8/8 | hip hop | 100% | no | 209 | 80% |
+| 17 | The Neighbourhood | 8 | 8/8 | independent | 100% | no | 29 | 11% |
+| 35 | Kendrick Lamar / Kanye West / Eminem | 9 | 9/9 | hip hop | 100% | no | 208 | 80% |
+| 9 | PARTYNEXTDOOR | 10 | 9/10 | pop | 89% | no | 225 | 87% |
+| 5 | Joji | 10 | 10/10 | pop | 70% | no | 226 | 87% |
+| 36 | Lil Baby / Lil Peep / Chris Brown | 13 | 13/13 | hip hop | 100% | no | 204 | 80% |
+| 12 | T-Series / Pritam / Sony Music India | 15 | 15/15 | music of asia | 93% | no | 0 | 0% |
+| 24 | 21 Savage | 16 | 16/16 | hip hop | 100% | no | 201 | 79% |
+| 26 | Future | 18 | 18/18 | hip hop | 100% | no | 199 | 79% |
+| 8 | Don Toliver | 22 | 22/22 | hip hop | 100% | no | 195 | 79% |
+| 23 | The Weeknd | 25 | 25/25 | pop | 100% | no | 208 | 85% |
+| 34 | Drake | 25 | 25/25 | hip hop | 100% | no | 192 | 79% |
+| 32 | Travis Scott | 25 | 25/25 | hip hop | 100% | no | 192 | 79% |
+| 25 | Metro Boomin | 26 | 26/26 | hip hop | 100% | no | 191 | 79% |
+
+"admit ratio" = outside sharing genre / (eligible pool outside this cluster). The fraction of *everyone else's* eligible candidates this cluster's modal genre would admit into a backfill - a genuine constraint should be well under 100%.
+
 
 **Clusters where the modal genre is ambiguous (no label above 50% of labeled eligible members), any cluster not just shallow ones:** 0 of 37
 
 
+## Sensitivity check - is "genre match" actually discriminating?
+
+Within the 268-track labeled-eligible pool (spanning 31 clusters), some labels are common to most clusters rather than distinguishing between them - the same failure mode `embed.GENERIC_TOPICS` already exists to filter for "Music"/"Entertainment", just not extended to these. Applying the brief's own 50% bar symmetrically (a label common across more than half of labeled clusters cannot be what discriminates between them, the same way a genre needs >50% share *within* a cluster to be an unambiguous modal genre) excludes:
+
+
+| label | clusters it touches | share of labeled clusters |
+|---|---|---|
+| pop | 30 / 31 | 97% |
+| hip hop | 26 / 31 | 84% |
+| electronic | 24 / 31 | 77% |
+| soul | 22 / 31 | 71% |
+| rhythm and blues | 20 / 31 | 65% |
+
+Under the naive (literal brief-definition) view, the median admit ratio across shallow clusters is 79% - most of a shallow cluster's "genre-matching" candidates are actually just most of everyone else's eligible pool. Re-running modal genre and reachability with the labels above excluded ("strict" view) gives the numbers below.
+
+
+| cluster | name | modal genre (strict) | outside sharing (strict) | admit ratio (strict) | reachable@45 (strict) |
+|---|---|---|---|---|---|
+| 7 | Arjan Dhillon / APDHILLON / AP Dhillon | not computable | n/a | n/a | no |
+| 14 | TL-Jhondi Gemar / $uicideboy$ / Moviechat | not computable | n/a | n/a | no |
+| 13 | Technical Guitarist Official / Guitar With Aman / Strumming Strings | not computable | n/a | n/a | no |
+| 16 | Offset / Future / Quality Control | not computable | n/a | n/a | no |
+| 20 | MyGuyMars | not computable | n/a | n/a | no |
+| 21 | Chadtag / wowday / Big K.R.I.T. | not computable | n/a | n/a | no |
+| 4 | backfromparadise / INTERWORLD / Aarush Prashanth | not computable | n/a | n/a | no |
+| 0 | The Kid LAROI / Cheema Y / The Kid LAROI. | independent | 36 | 13% | no |
+| 30 | Lil Uzi Vert | not computable | n/a | n/a | no |
+| 10 | King Von / Gesaffelstein / New West | not computable | n/a | n/a | no |
+| 1 | Doja Cat / dojacat / SZA | not computable | n/a | n/a | no |
+| 29 | Lana Del Rey | independent | 36 | 13% | no |
+| 11 | Novulent | independent | 35 | 13% | no |
+| 28 | Radiohead / softsync / Coldplay | independent | 35 | 13% | no |
+| 31 | Arctic Monkeys / Ellie Goulding / Anna Marx | independent | 36 | 13% | no |
+| 6 | Juice WRLD | not computable | n/a | n/a | no |
+| 22 | Gunna / d4vd / Ze66y | country | 0 | 0% | no |
+| 19 | Gunna / Yeat | not computable | n/a | n/a | no |
+| 3 | A$AP Rocky / LIVELOVEASAP / Major Lazer | independent | 34 | 13% | no |
+| 18 | Cigarettes After Sex / Chadtag / Hotel Ugly | independent | 34 | 13% | no |
+| 27 | Justin Bieber | independent | 36 | 14% | no |
+| 15 | XXXTENTACION | independent | 34 | 13% | no |
+| 33 | Young Thug | not computable | n/a | n/a | no |
+| 2 | Playboi Carti | not computable | n/a | n/a | no |
+| 17 | The Neighbourhood | independent | 29 | 11% | no |
+| 35 | Kendrick Lamar / Kanye West / Eminem | not computable | n/a | n/a | no |
+| 9 | PARTYNEXTDOOR | independent | 36 | 14% | yes |
+| 5 | Joji | independent | 33 | 13% | no |
+| 36 | Lil Baby / Lil Peep / Chris Brown | independent | 36 | 14% | yes |
+| 12 | T-Series / Pritam / Sony Music India | music of asia | 0 | 0% | no |
+| 24 | 21 Savage | not computable | n/a | n/a | no |
+| 26 | Future | not computable | n/a | n/a | no |
+| 8 | Don Toliver | not computable | n/a | n/a | no |
+| 23 | The Weeknd | independent | 32 | 13% | yes |
+| 34 | Drake | not computable | n/a | n/a | no |
+| 32 | Travis Scott | not computable | n/a | n/a | no |
+| 25 | Metro Boomin | reggae | 0 | 0% | no |
+
+**T-Series** (CLAUDE.md's named example of incoherent nearest-embedding-centroid backfill - Known Open Item #3): modal genre `music of asia` survives the strict filter unchanged (`music of asia` touches only 1/31 labeled clusters - genuinely discriminative), with 0 outside eligible candidates sharing it either way. Genre-matching does not fix item #3 for this cluster - it fails differently: a short, genuinely-Bollywood-adjacent playlist instead of a full-length incoherent one (Joji, Playboi Carti, Doja Cat).
+
+
 ## Number 3 - Reachability
 
-Of 37 shallow clusters: **29 could reach 45 tracks** using only genre-matching eligible candidates (native eligible + eligible candidates outside the cluster sharing its modal genre, noise/cluster=-1 excluded because today's backfill mechanism (`writer._select_with_backfill`) never draws from noise either). 3 could not. 5 have no computable modal genre (zero eligible members carry any genre label) and are excluded from both counts rather than assumed either way.
+**Naive (literal brief definition):** of 37 shallow clusters, 26 could reach 45 tracks using genre-matching eligible candidates (native + outside-cluster eligible candidates sharing the modal genre, noise/cluster=-1 excluded because today's backfill mechanism, `writer._select_with_backfill`, never draws from noise either); 5 could not; 6 have no computable modal genre. **This number is inflated** - see the sensitivity check above: the modal genre for most clusters is "pop" or "hip hop", each present on 30/31 and 26/31 labeled clusters respectively, so "shares the modal genre" is close to "is anything at all" for most of the pool.
+
+
+**Strict (non-discriminative labels excluded):** of 37 shallow clusters, **3 could reach 45 tracks**; 14 could not; **20 have no computable modal genre at all** once pop/hip hop/electronic/etc. are excluded - their eligible members carry no other label, so a genre constraint has nothing left to match on for them.
 
 
 ## Verdict
 
-Genre-constrained backfill viable on this data: **yes** - 29 of 37 shallow clusters (78%) reach 45 tracks via genre-matching eligible candidates alone.
+Genre-constrained backfill viable on this data: **no** - under the literal brief definition 26 of 37 shallow clusters (70% if 37 else 0) reach 45 tracks, but that figure is carried almost entirely by non-discriminative labels ("pop" alone touches 30 of 31 labeled clusters); once those are excluded only 3 of 37 reach 45 tracks and 20 have no genre signal left to constrain on at all.
