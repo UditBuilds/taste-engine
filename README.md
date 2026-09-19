@@ -26,8 +26,8 @@ rediscover` and confirmed against the live API (§8).*
 
 ## What was measured and rejected
 
-Each of these was a promising direction. Each got a written brief, a measurement, and a
-report that is still in this repository. None of them worked.
+Each of these was a promising direction. Most got a written brief; all got a measurement
+and a report that is still in this repository. None of them worked.
 
 **Genre-based backfill (`reports/genre_coverage.md`).** YouTube's `topicCategories`
 labels are too coarse to constrain anything: "pop" covers 2,176 of 2,918 tracks, roughly
