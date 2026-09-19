@@ -1,27 +1,55 @@
 # taste-engine
 
-A single-user music recommender built from one person's YouTube watch
-history. End to end: parse a Google Takeout export, classify which watched
-videos are actually music, collapse duplicate uploads of the same recording
-into one canonical song, score by implicit feedback (play count and recency),
-cluster by mood/artist, and write ranked playlists back to YouTube Music
-through the Data API, inside a 10,000-unit/day budget it is not allowed to
-exceed. The corpus: 2,918 canonical songs from 40,619 plays across 30,440
-watched videos over 363 days.
+A personal music recommendation and playlist-generation system built over one year of
+my own YouTube listening history. It parses a Google Takeout export (40,619 plays,
+2,918 canonical tracks, 362 days), resolves and classifies each video through the
+YouTube Data API, scores tracks by play count and recency, clusters them by embedding
+similarity, and writes the resulting playlists back to my real YouTube account.
 
-Start with §1 below — it is the spine of this repo, and §1.7 is its summary.
+On the rediscovery task — surfacing tracks I'd stopped playing, excluding my global
+top 50 — it scores nDCG@20 of 0.3312 against a 0.1382 baseline, a 139.7% improvement
+that held in all three held-out splits. **At n=3 that is p=0.125 and not statistically
+certifiable.** The direction has survived six successive corrections to the pipeline;
+the magnitude has moved every single time.
 
-**What this repo is actually for.** The headline number was computed four
-times and was wrong three times. Each correction came from the harness
-catching itself, and each one is documented below with the bad number left in
-place. The final result is a large, consistent lift that the dataset is too
-small to certify — and saying exactly that is the point.
+That second paragraph is the point of this repository. The interesting artifact here is
+not the number — it's the record of how many times the number was wrong, how it was
+caught, and what was measured to close each question. Four separate directions were
+investigated and killed by measurement rather than abandoned quietly. They're documented
+below with the same weight as the result.
 
 ![A 45-track private YouTube Music playlist titled "taste-engine: T-Series / Pritam / Sony Music India"](docs/playlist.png)
 
 *The playlist `taste-engine write` actually wrote: 45 tracks from the
 "T-Series / Pritam / Sony Music India" cluster, produced by `--mode
 rediscover` and confirmed against the live API (§8).*
+
+## What was measured and rejected
+
+Each of these was a promising direction. Each got a written brief, a measurement, and a
+report that is still in this repository. None of them worked.
+
+**Genre-based backfill (`reports/genre_coverage.md`).** YouTube's `topicCategories`
+labels are too coarse to constrain anything: "pop" covers 2,176 of 2,918 tracks, roughly
+75% of the library. A genre guard built on them is near-vacuous for exactly the clusters
+that needed it. Once non-discriminative labels are excluded, only 3 of 37 clusters have
+a usable genre signal.
+
+**Last.fm community tags (`reports/lastfm_coverage.md`).** Proposed as a finer-grained
+replacement. Track-level tag coverage came back at 640 of 2,918 (21.9%), far below what
+a per-track signal needs to be usable. Kept in the repo as a documented negative
+result. The artist-level fallback was rejected separately, because it would have
+reintroduced the artist-shapedness the whole exercise was meant to escape.
+
+**Dormancy signals (`reports/dormancy_probe.md`).** Hypothesis: rank by how long a track
+has been unplayed. The Takeout export spans 362 days and 61.8% of the library has exactly
+one lifetime play, so "days since last play" mostly measures when a track first appeared,
+not when it was abandoned. The signal doesn't exist in this data.
+
+**Backfill as a feature.** The cumulative result of the above: `BACKFILL_ENABLED` is
+`False`. The FLOOR / LENGTH / GUARD / RANK / CEILING machinery is still in the codebase,
+tested and unreached, because the architecture is sound and the input signals are not.
+Playlists ship native-only and return short rather than padding.
 
 ### Quickstart
 
@@ -620,54 +648,54 @@ one-off listens can be labelled noise instead of being forced into a mood.
 **These are artist clusters, not mood clusters.** The embedding text contains
 the artist name and MiniLM keys on it heavily.
 
-### Does removing the artist help? No — measurably not
+### Embedding modes and the noise convention
 
-The obvious fix is to drop the artist and embed title plus genre instead. To
-test it rather than assume it, all three clusterings are scored against an
-**external** ground truth: the user's own 48 hand-curated playlists, restricted
-to tracks filed in exactly one of them. A silhouette score would only measure
-how tidy a clustering looks in the space it was built from, which is circular.
-A human saying "these belong together" is not.
+Three embedding modes were compared against ground truth — my own YouTube playlist
+filings, pseudonymised, 480 tracks after dropping 3 with conflicting labels.
 
-```bash
-python -m taste_engine.cluster_eval
-```
+HDBSCAN marks points it declines to group as `cluster == -1`. How those are handled
+changes the answer, so all three conventions are reported:
 
-| embedding text | ARI | NMI | purity | coverage | clusters | noise |
-|---|---:|---:|---:|---:|---:|---:|
-| **`"{title} - {artist}"`** | **0.649** | **0.633** | **0.679** | 54% | 38 | 45% |
-| `"{title}"`, artist stripped | 0.383 | 0.452 | 0.467 | 42% | 19 | **57%** |
-| `"{title}. {genres}"` | 0.470 | 0.478 | 0.444 | **63%** | 32 | 44% |
+| mode | exclude | single_cluster | singletons |
+|---|---:|---:|---:|
+| title_artist | 0.6561 | 0.1415 | **0.4140** |
+| title_genre | 0.3365 | 0.1683 | **0.2539** |
+| title | 0.3799 | 0.0314 | **0.1933** |
 
-Measured at commit `cde906e` + this table's own fix (`artist_from_channel`'s
-NaN guard, below), on a dataset snapshot dated 2026-09-15: 40,619 plays,
-30,440 resolved videos, 11,475 playlist-track rows across 48 playlists,
-2,918 canonical music tracks. The table's `clusters`/`noise` columns come
-from `cluster_eval.compare_modes` on those 2,918 tracks — a different
-measurement from the "38 clusters" in the PCA-vs-raw table above (2,858
-tracks, predates canonical collapse, out of this re-measurement's scope
-and left unchanged). Only the `title_artist` row actually moved under the
-fix; `title` and `title_genre` were re-measured both before and after it
-and came back byte-identical each time, so all three rows hold under
-either commit. This is the third time this table has been
-measured, not the first: it was originally written at `f46dc24`, before
-canonical-upload collapse (`8e7dd42`) and the strict music filter
-(`5b0596d`) existed, so the first version described data neither of those
-had touched yet — it did not describe the current pipeline, and the gap was
-not caught until this re-measurement. Full re-measurement, the delta
-against both the original table and an interim unfixed re-run, and the
-invariance check confirming the rediscovery evaluation did not move:
-`reports/embedding_modes_remeasured.md`,
-`reports/eval_invariance_embed_remeasure.txt`.
+**This project's default is `singletons`** (bolded column). The reasoning is recorded in
+`CLAUDE.md` item 10 and does not depend on the outcome:
 
-**The hypothesis was wrong.** Artist-keyed text agrees best with the user's own
-filing on every alignment metric — ARI 0.649 against 0.470 for genre and 0.383
-for bare titles. Re-measurement changed the specific numbers but not this
-conclusion: `title_artist` still wins on every metric, though its margin over
-`title_genre` narrowed by about a fifth once duplicate uploads stopped
-inflating the comparison (canonical collapse plausibly helps a genre-keyed
-embedding more than an artist-keyed one, since duplicate uploads of a song
-carry inconsistent genre tags but the same artist).
+- `exclude` drops noise points before scoring, so each mode is graded on a different
+  set of tracks — 261, 197 and 340 of 480 respectively. That is not a comparison.
+- `single_cluster` treats all noise as one group, which asserts a structure the
+  algorithm explicitly refused to assert.
+- `singletons` grades all 480 and treats an unplaced track as what it is: alone.
+
+For honesty about how that choice was made: it was made with the full table above
+already in hand, and `singletons` happens to be the convention most favourable to the
+claim below. The reasoning is outcome-independent; the timing was not. Both tables are
+published so the choice can be checked.
+
+**What this supports:** `title_artist` beats `title_genre` by 0.1601, clearing the
+structural noise band by 16.85×.
+
+**What it does not support:** `title_genre` beats `title` by only 0.0606, which is
+inside the noise band (0.55×). Earlier versions of this README asserted that ranking.
+It is not defensible, and under the `exclude` convention the direction reverses
+outright. Measurements are in `reports/embedding_modes_pool480.md`.
+
+**The honest caveat, which the genre result does not remove:** the ground truth
+is itself partly artist-shaped — several of the 48 playlists are single-artist
+collections, named after the artist they collect. It therefore rewards artist
+clustering to some degree by construction. It remains
+the best external label available, and if the goal is generating playlists like
+the ones this user actually makes, that bias is pointing at the target rather
+than away from it.
+
+Provenance for the table above: commit `4edbc6fa261e70bc581c6178d9dd00210c2376d1`,
+ground-truth pool 480, `min_samples` = 2, measured 2026-09-19. Full breakdown, all
+three conventions' NMI and purity, and the noise-band check on both gaps:
+`reports/embedding_modes_pool480.md`.
 
 Why each variant fails:
 
@@ -706,14 +734,6 @@ Removing the artist properly also meant stripping the `"Artist - "` prefix from
 the *title*, not just dropping the channel — otherwise the artist survives in
 the title and nothing is actually tested. `coverage` is reported so a
 clustering cannot win by labelling everything noise.
-
-**The honest caveat, which the genre result does not remove:** the ground truth
-is itself partly artist-shaped — several of the 48 playlists are single-artist
-collections, named after the artist they collect. It therefore rewards artist
-clustering to some degree by construction. It remains
-the best external label available, and if the goal is generating playlists like
-the ones this user actually makes, that bias is pointing at the target rather
-than away from it.
 
 ## 7. Quota engineering
 
@@ -1064,3 +1084,20 @@ It is public and built on one person's data, so:
   development-mode cap.
 - **LLM-generated track lists.** They hallucinate songs and still leave you
   with the ID-resolution problem.
+
+## Known limitations
+
+- **The headline result is n=3.** Three held-out splits, p=0.125. The sign has been
+  stable across six pipeline corrections; the magnitude has not.
+- **No audio signal anywhere in the pipeline.** Clustering runs on sentence-transformer
+  embeddings of `"{title} - {artist}"` text plus coarse `topicCategories`. Clusters come
+  out artist-shaped because that is what the inputs describe. Spotify's audio-features
+  endpoint has been closed to new apps since November 2024; self-hosted extraction would
+  require downloading audio, which is a terms-of-service problem for a public repository.
+- **Single user, one library.** Every figure here is measured on one person's 362-day
+  listening history. Nothing about it generalises without being re-measured.
+- **Score decay is aggressive.** A 14-day half-life with a 0.5 floor puts a single play
+  below threshold in about 6.6 days, which is why the rediscovery task surfaces less
+  genuinely dormant music than its name suggests.
+- **Quota-bound.** Writing all qualifying clusters costs more than a single day's
+  YouTube Data API allowance. Every write is run manually.
