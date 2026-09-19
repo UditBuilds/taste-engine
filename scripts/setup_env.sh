@@ -12,9 +12,9 @@ uv venv --python 3.11 "$VENV"
 VIRTUAL_ENV="$VENV" uv pip install \
   --extra-index-url https://download.pytorch.org/whl/cpu \
   --index-strategy unsafe-best-match \
-  pandas lxml numpy scikit-learn pytest python-dotenv \
+  pandas numpy scikit-learn pytest python-dotenv \
   google-api-python-client google-auth-oauthlib google-auth-httplib2 \
   sentence-transformers
 
-"$VENV/bin/python" -c "import sys,pandas,lxml,sklearn,numpy; print('python', sys.version.split()[0]); print('pandas', pandas.__version__); print('sklearn', sklearn.__version__)"
+"$VENV/bin/python" -c "import sys,pandas,sklearn,numpy; print('python', sys.version.split()[0]); print('pandas', pandas.__version__); print('sklearn', sklearn.__version__)"
 echo "SETUP_OK $VENV"
