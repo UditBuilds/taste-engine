@@ -26,7 +26,7 @@ rediscover` and confirmed against the live API (§8).*
 
 ## What was measured and rejected
 
-Each of these was a promising direction. Most got a written brief; all got a measurement
+Each of these was a promising direction. Some got a written brief; all got a measurement
 and a report that is still in this repository. None of them worked.
 
 **Genre-based backfill (`reports/genre_coverage.md`).** YouTube's `topicCategories`

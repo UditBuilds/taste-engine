@@ -114,7 +114,7 @@ wrong number that looks fine.
 | Last.fm tags **not integrated** into scoring/clustering (2026-09-15) | Measurement-only precursor for a future decision brief: 640/2,918 canonical tracks (21.9%) matched directly, +118 (4.0%) via artist-name fallback; dominant failure is the track having zero tags on Last.fm, not a failed lookup. Not viable as a standalone per-track genre/mood signal. `lastfm.py`, `track_tags`/`track_tag_lookups` tables exist for possible future combination with other signals — nothing in scoring/clustering/write-path reads them. `reports/lastfm_coverage.md`. |
 | `evaluate.split_frames`'s **training** frame dates `in_playlist` via `playlist_as_of=split_date`; its **test** frame stays undated (2026-09-16) | An external review found `classify.py`'s `in_playlist` had no date condition at all, and it reaches row membership of the frame a temporal hold-out clusters, not just an `is_music` label. Confirmed, and fixed — `classify()`/`scored_tracks()` take an optional `playlist_as_of` cutoff, `None` everywhere except this one call site, so the live write path and every other caller is unaffected. Measured zero actual impact at the pinned split and all 9 nested-tuning splits before *and* after fixing it (stash/re-run/pop, byte-identical eval output) — no track's `is_music` currently depends on a post-split playlist add — but an undated global in a temporal hold-out is wrong regardless of today's data, so it was fixed anyway. `test` was deliberately left undated: it is ground truth of what was actually played, not training input, and no leak was found on that side. `reports/eval_verification.md`. |
 | `cluster_eval`'s ground truth is mapped raw → canonical **before** the coherence join; a canonical track whose raw ground-truth members carry conflicting playlist labels is **dropped**, never a tiebreak (2026-09-17) | The raw/canonical id mismatch (item 11, below) silently dropped 48 of 486 ground-truth music tracks — `canonical_ground_truth()` fixes the join direction (raw → canonical, matching `clustered["video_id"]`, not the reverse) and reports the resulting denominator explicitly (438 → 480). Canonicalising surfaces 3 canonical tracks carrying two playlists' labels — this is a **data-quality exclusion, not a canonicalisation over-merge guard**: every conflict found is one song independently filed into two playlists by the user, not two different songs wrongly fused (`reports/ground_truth_audit.md`, Item 3, checked all three). Picking a winner by play count or recency would assert a single label the source data does not agree on, so the whole track is dropped instead. `reports/ground_truth_audit.md` (diagnosis), `reports/ground_truth_ids.md` (before/after across modes/conventions — the `title_artist`/`title_genre` gap still clears its noise band under `exclude`/`singletons` both before and after; the already-known `single_cluster` flip, item 10, persists but its margin depends on which `min_samples` the noise band is measured at). |
-| `scripts/genre_coverage.py`'s `EXPECTED_REDISCOVER_CLUSTER_SIZE` gate **dropped, not repinned or range-checked** (2026-09-19) | Item 9's premise — cluster size is time-invariant — is false against a clustering *code* change, only true against score/`as_of` drift; a reclustering (item 6/9, 2026-09-16) moved 492/84 → 490/86 and the hard assertion then blocked the script from running at all. Repinning to 490/86 just re-breaks on the next reclustering; a range check makes the wrong premise harder to falsify. Replaced with a `[drift]` observation that reports today's size against the historical figure and never stops the script. `briefs/portability_defects.md` Part C4. |
+| `scripts/genre_coverage.py`'s `EXPECTED_REDISCOVER_CLUSTER_SIZE` gate **dropped, not repinned or range-checked** (2026-09-19) | Item 9's premise — cluster size is time-invariant — is false against a clustering *code* change, only true against score/`as_of` drift; a reclustering (item 6/9, 2026-09-16) moved 492/84 → 490/86 and the hard assertion then blocked the script from running at all. Repinning to 490/86 just re-breaks on the next reclustering; a range check makes the wrong premise harder to falsify. Replaced with a `[drift]` observation that reports today's size against the historical figure and never stops the script. Commits `521a4da` through `cdd4125` (Part C4). |
 | Evaluation's default noise convention is **`singletons`** (2026-09-19) | **`exclude` was rejected** because each mode self-selects its own denominator: under `exclude`, `title_artist` is graded on 261 of 480 tracks, `title` on 197, `title_genre` on 340 — the modes are not compared on the same set of tracks, the defect originally found 2026-09-16. **`single_cluster` was rejected** because it asserts a structure the algorithm explicitly declined to assert: HDBSCAN's `cluster == -1` means those points do not form a group, and grading them as one group penalises a claim the clustering never made. **`singletons` was adopted** because it grades all 480 tracks, keeps the denominator constant across modes, and treats an unplaced track as what it is — a track in no group with any other; it is the only one of the three that neither self-selects a denominator nor invents structure. Chosen with the full three-convention table already in hand (`reports/embedding_modes_pool480.md`), not before seeing it — full provenance note and consequences for the published figures in open item 10. |
 
 ### Cluster ids are not identifiers
@@ -313,7 +313,7 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
   wall-clock-dependent and had already decayed past its threshold before
   this brief started).
 - **NaN guard gaps in `redact.alias()` and `embed.strip_artist_from_title()`
-  fixed (2026-09-19), `briefs/portability_defects.md` Part A, committed
+  fixed (2026-09-19), commit `521a4da` (Part A), committed
   alone before any other part of that brief started.** Closes two of open
   item 8's three entries: `alias()`'s `name is None` guard now also catches
   a float NaN (same `x != x` idiom as `normalise_title`/
@@ -436,8 +436,8 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
    `Counter`. Full inventory, including what was checked and ruled out:
    `reports/defect_audit.md`.
 
-   **2026-09-19: the first two closed.** `briefs/portability_defects.md`
-   Part A fixed `redact.alias()`'s NaN guard and
+   **2026-09-19: the first two closed.** Commit `521a4da` (Part A)
+   fixed `redact.alias()`'s NaN guard and
    `embed.strip_artist_from_title()`'s artist-side guard, matching the
    existing `x != x` idiom rather than introducing `pd.isna()` as a second
    convention. Measured zero effect on any currently-published number
@@ -475,7 +475,7 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
    item 6 already flagged before this made it two-for-two.
 
    **2026-09-19: the gate is dropped (Decisions table), and the script now
-   runs.** `briefs/portability_defects.md` Part C4 replaced the hard
+   runs.** Commits `521a4da` through `cdd4125` (Part C4) replaced the hard
    assertion with a `[drift]` observation — today's rediscover-pool cluster
    sizes are 490 (T-Series) and 86 (Travis Scott), both still drifted from
    the historical 492/84, reported rather than gated.
@@ -525,7 +525,7 @@ p = 0.125, so "not significant" there means *underpowered*, not *no effect* —
     ground-truth join fix it is 480.
 
     **2026-09-19: closed — the default convention is `singletons`.**
-    `briefs/close_convention_decision.md`, built on
+    Commit `84c7db2`, built on
     `reports/embedding_modes_pool480.md`'s already-published
     three-convention table and that report's own new §5 (added by the
     same brief): the `single_cluster` ARI flip is verified ARI-only, not
