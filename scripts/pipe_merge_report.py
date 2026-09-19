@@ -5,9 +5,10 @@ Run:  scripts/run.sh scripts/pipe_merge_report.py
 import collections
 import sys
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
-sys.path.insert(0, "/mnt/c/Users/uditk/Projects/taste-engine/src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pandas as pd
 

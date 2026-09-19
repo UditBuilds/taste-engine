@@ -4,6 +4,7 @@
 #   scripts/run.sh -m pytest -q
 set -euo pipefail
 VENV="$HOME/.venvs/taste-engine"
-REPO="/mnt/c/Users/uditk/Projects/taste-engine"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(dirname "$SCRIPT_DIR")"
 cd "$REPO"
 exec "$VENV/bin/python" "$@"

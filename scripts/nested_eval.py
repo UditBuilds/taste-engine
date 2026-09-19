@@ -4,9 +4,10 @@ Run:  scripts/run.sh scripts/nested_eval.py
 """
 import sys
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
-sys.path.insert(0, "/mnt/c/Users/uditk/Projects/taste-engine/src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from taste_engine.db import connect
 from taste_engine.evaluate import nested_rediscovery

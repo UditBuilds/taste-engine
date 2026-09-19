@@ -6,8 +6,9 @@ not requested - there is no `limit` to pass.
 Run:  scripts/run.sh scripts/verify_write_plan.py <cluster>
 """
 import sys, warnings, collections, re
+from pathlib import Path
 warnings.filterwarnings("ignore")
-sys.path.insert(0, "/mnt/c/Users/uditk/Projects/taste-engine/src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from taste_engine.db import connect
 from taste_engine.writer import plan

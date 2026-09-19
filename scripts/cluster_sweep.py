@@ -1,12 +1,13 @@
 """Sweep clustering configs and report structure quality."""
 import sys
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 warnings.filterwarnings("ignore")
-sys.path.insert(0, "/mnt/c/Users/uditk/Projects/taste-engine/src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sklearn.cluster import HDBSCAN
 from sklearn.decomposition import PCA

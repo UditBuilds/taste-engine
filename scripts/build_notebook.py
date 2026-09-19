@@ -7,7 +7,7 @@ from pathlib import Path
 import nbformat as nbf
 from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
 
-REPO = Path("/mnt/c/Users/uditk/Projects/taste-engine")
+REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "notebooks" / "01_eda.ipynb"
 
 MD = new_markdown_cell

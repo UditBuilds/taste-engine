@@ -4,7 +4,6 @@
 set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 VENV="$HOME/.venvs/taste-engine"
-REPO="/mnt/c/Users/uditk/Projects/taste-engine"
 
 uv python install 3.11
 uv venv --python 3.11 "$VENV"

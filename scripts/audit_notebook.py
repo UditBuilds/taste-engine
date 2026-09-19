@@ -8,10 +8,11 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, "/mnt/c/Users/uditk/Projects/taste-engine/src")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
 from taste_engine.redact import load_aliases  # noqa: E402
 
-NB = Path("/mnt/c/Users/uditk/Projects/taste-engine/notebooks/01_eda.ipynb")
+NB = REPO_ROOT / "notebooks" / "01_eda.ipynb"
 
 nb = json.loads(NB.read_text(encoding="utf-8"))
 chunks, images = [], 0

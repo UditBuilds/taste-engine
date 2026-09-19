@@ -1,7 +1,8 @@
 """How many tracks collapse, and where the merge might be too aggressive."""
 import sys, warnings
+from pathlib import Path
 warnings.filterwarnings("ignore")
-sys.path.insert(0, "/mnt/c/Users/uditk/Projects/taste-engine/src")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from taste_engine.db import connect
 from taste_engine.canonical import collapse_report
 from taste_engine.score import scored_tracks

@@ -15,9 +15,11 @@ Run:  scripts/run.sh scripts/contamination.py
 import re
 import sys
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
-sys.path.insert(0, "/mnt/c/Users/uditk/Projects/taste-engine/src")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 import pandas as pd
 
@@ -199,7 +201,7 @@ api_alone = songs["api_says_music"] & ~songs[list(HEURISTIC_SIGNALS)].any(axis=1
 print(f"    {'categoryId == 10 alone':<32}{int((api_alone & not_song).sum()):>4}"
       "   <- the permissive one")
 
-path = "/mnt/c/Users/uditk/Projects/taste-engine/data/contamination_sample.csv"
+path = REPO_ROOT / "data" / "contamination_sample.csv"
 out[["video_id", "title", "channel", "sig", "seconds", "category_id",
      "flag_score"]].to_csv(path, index=False)
 print(f"\n  full sample written to {path} (gitignored)")
