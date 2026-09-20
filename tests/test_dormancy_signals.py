@@ -48,3 +48,74 @@ class TestMdTableIntegerPreservation:
 
     def test_empty_frame(self):
         assert signals._md_table(pd.DataFrame(columns=["a", "b"])) == "*(none)*"
+
+
+# --- as_of reproducibility (brief: reproducibility_and_distribution, Part B) --
+# `build_report` used to read `pd.Timestamp.now(tz="UTC")` internally with no
+# way to pin it, so every figure in reports/dormancy_signals.md was a
+# snapshot of when the script happened to run, not a property of the
+# dataset - and nothing recorded that this was so. Fixed by threading an
+# optional `as_of` through `build_report`/`main --as-of`, defaulting to the
+# original wall-clock behaviour when omitted, so no existing caller changes.
+
+AS_OF_LABEL_PREFIX = '- `as_of` pinned for every "current"/live number below: `'
+
+
+class TestAsOfReproducibility:
+    def test_explicit_as_of_is_used_and_appears_labelled_in_output(self, db):
+        pinned = pd.Timestamp("2026-08-15T00:00:00", tz="UTC")
+        text = signals.build_report(as_of=pinned)
+        matches = [l for l in text.splitlines() if l.startswith(AS_OF_LABEL_PREFIX)]
+        assert len(matches) == 1, "expected exactly one labelled as_of line"
+        assert matches[0] == AS_OF_LABEL_PREFIX + pinned.isoformat() + "`"
+
+    def test_as_of_is_actually_threaded_through_not_just_labelled(self, db):
+        """The label alone would not catch a regression where `as_of` is
+        accepted but silently dropped before reaching `d.build_frames` /
+        `track_signal_table` - strip the two lines that legitimately vary
+        run-to-run (the as_of label itself, and the always-wall-clock
+        "Report generated" provenance line) and require the rest of the
+        report to differ when as_of differs by two months, since
+        days_since/recency-window figures must move."""
+
+        def strip_timestamp_lines(text: str) -> str:
+            return "\n".join(
+                line for line in text.splitlines()
+                if not line.startswith(AS_OF_LABEL_PREFIX)
+                and not line.startswith("- Report generated")
+            )
+
+        early = signals.build_report(as_of=pd.Timestamp("2026-06-01", tz="UTC"))
+        late = signals.build_report(as_of=pd.Timestamp("2026-08-01", tz="UTC"))
+        assert strip_timestamp_lines(early) != strip_timestamp_lines(late)
+
+    def test_default_as_of_omitted_falls_back_to_wall_clock(self, db):
+        before = pd.Timestamp.now(tz="UTC")
+        text = signals.build_report()
+        after = pd.Timestamp.now(tz="UTC")
+        line = next(l for l in text.splitlines() if l.startswith(AS_OF_LABEL_PREFIX))
+        used = pd.Timestamp(line[len(AS_OF_LABEL_PREFIX):-1])
+        assert before <= used <= after
+
+    def test_cli_as_of_flag_threads_through_main(self, db, tmp_path, monkeypatch):
+        monkeypatch.setattr(signals, "REPORT_PATH", tmp_path / "report.md")
+        rc = signals.main(["--as-of", "2026-08-15T00:00:00Z"])
+        assert rc == 0
+        text = (tmp_path / "report.md").read_text(encoding="utf-8")
+        assert AS_OF_LABEL_PREFIX + "2026-08-15T00:00:00+00:00`" in text
+
+    def test_cli_naive_date_localizes_to_utc_not_silently_misinterpreted(
+        self, db, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(signals, "REPORT_PATH", tmp_path / "report.md")
+        signals.main(["--as-of", "2026-08-15"])
+        text = (tmp_path / "report.md").read_text(encoding="utf-8")
+        assert AS_OF_LABEL_PREFIX + "2026-08-15T00:00:00+00:00`" in text
+
+    def test_cli_default_omits_as_of_flag_and_still_writes_a_report(
+        self, db, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(signals, "REPORT_PATH", tmp_path / "report.md")
+        rc = signals.main([])
+        assert rc == 0
+        assert (tmp_path / "report.md").exists()

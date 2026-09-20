@@ -11,6 +11,7 @@ Run:  scripts/run.sh scripts/dormancy_signals.py
 """
 from __future__ import annotations
 
+import argparse
 import math
 import subprocess
 from pathlib import Path
@@ -103,10 +104,18 @@ def _track_display(table: pd.DataFrame, with_label: bool = True) -> pd.DataFrame
     )
 
 
-def build_report() -> str:
+def build_report(as_of: pd.Timestamp | None = None) -> str:
+    """Every figure below is `as_of`-dependent - recency windows, days-since,
+    and what counts as "shipped" right now are all relative to it. A report
+    generated at one `as_of` is not comparable to one generated at another.
+
+    Defaults to wall-clock (`pd.Timestamp.now(tz="UTC")`), matching every
+    existing caller; pass an explicit, tz-aware value for a reproducible,
+    pinned run.
+    """
     conn = connect()
     try:
-        as_of = pd.Timestamp.now(tz="UTC")
+        as_of = pd.Timestamp.now(tz="UTC") if as_of is None else as_of
         frame_full, frame_excl, obvious = d.build_frames(conn, as_of=as_of)
         key_of = d.canonical_key_of(conn)
         plays_by_key = d.plays_by_canonical_key(conn, key_of)
@@ -497,8 +506,23 @@ def build_report() -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
-    text = build_report()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Dormancy signal measurement")
+    parser.add_argument(
+        "--as-of",
+        help="Pin the analysis 'now' to this ISO date/timestamp (UTC assumed "
+             "if no offset is given) instead of wall-clock. Every figure in "
+             "the report is as_of-dependent, so runs at different --as-of "
+             "values are not comparable. Omit for current (wall-clock) "
+             "behaviour.",
+    )
+    args = parser.parse_args(argv)
+    as_of = None
+    if args.as_of:
+        as_of = pd.Timestamp(args.as_of)
+        as_of = as_of.tz_localize("UTC") if as_of.tzinfo is None else as_of.tz_convert("UTC")
+
+    text = build_report(as_of=as_of)
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(text, encoding="utf-8")
     print(f"wrote {REPORT_PATH} ({len(text):,} bytes)")
