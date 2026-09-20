@@ -131,6 +131,9 @@ def measure(as_of: pd.Timestamp) -> dict:
     conn = connect()
     try:
         n_plays = conn.execute("SELECT COUNT(*) FROM plays").fetchone()[0]
+        max_watched_at = pd.Timestamp(
+            conn.execute("SELECT MAX(watched_at) FROM plays").fetchone()[0], tz="UTC"
+        )
 
         frame_full, frame_excl, obvious = d.build_frames(conn, as_of=as_of)
         qualifying = d.qualifying_clusters(frame_excl)
@@ -194,10 +197,12 @@ def measure(as_of: pd.Timestamp) -> dict:
             set_dormancy = set(top_by_dormancy["video_id"])
             overlap_rows.append({
                 "cluster": cid, "name": name,
+                "eligible_pool": len(eligible),
                 "n_top_by_score": len(set_score),
                 "n_top_by_dormancy": len(set_dormancy),
                 "overlap": len(set_score & set_dormancy),
                 "differ": len(set_score ^ set_dormancy),
+                "forced_identical": len(eligible) <= TOP_N,
             })
 
         eligible_all = (
@@ -215,6 +220,7 @@ def measure(as_of: pd.Timestamp) -> dict:
 
         return {
             "n_plays": n_plays,
+            "max_watched_at": max_watched_at,
             "n_canonical_tracks": int(frame_full.shape[0]),
             "qualifying": qualifying,
             "hist_df": pd.DataFrame(hist_rows),
@@ -323,22 +329,58 @@ def build_report(as_of: pd.Timestamp) -> str:
     a("")
     zero_to_7 = m["agg_hist_df"].set_index("bucket").loc["0-7", "n_tracks"]
     if zero_to_7 == 0 and int(m["agg_hist_df"]["n_tracks"].sum()) > 0:
-        a(f"**Observation, not tuned for:** the `0-7` bucket is empty in every "
-          "qualifying cluster at this `as_of`. Plausible mechanism, not "
-          "verified further here: a track played within the last week is "
-          "also likely to be among the library's most-played, which is "
-          "exactly what the global top-50 exclusion (`obvious`, applied "
-          "before this pool is built) removes — so the freshest plays are "
-          "disproportionately filtered out before `score >= MIN_SCORE` is "
-          "even evaluated, leaving this pool's youngest survivors starting "
-          "around a week old rather than at zero.")
+        gap_days = (as_of - m["max_watched_at"]).total_seconds() / 86_400.0
+        if gap_days >= 7:
+            a(f"**Observation, checked, not left as a guess:** the `0-7` "
+              "bucket is empty in every qualifying cluster. Measured cause: "
+              f"the most recent row in the entire `plays` table (any track, "
+              f"music or not, any cluster) is `{m['max_watched_at'].isoformat()}` "
+              f"— **{gap_days:.1f} days before this report's `as_of`**. No "
+              "play of any kind exists in the last 7 days at this `as_of`, "
+              "so the emptiness is a property of where the export ends, not "
+              "of the eligibility gate, the global top-50 exclusion, or "
+              "anything else in the scoring/clustering pipeline. Pinning "
+              "`as_of` any later than the export's own last play manufactures "
+              "an uninformative dead zone at the fresh end of every "
+              "histogram in this report — worth choosing deliberately in any "
+              "future re-run of this measurement, not left to wall-clock "
+              "default.")
+        else:
+            a(f"**Observation, not fully explained:** the `0-7` bucket is "
+              "empty in every qualifying cluster, and this is *not* simply "
+              f"because the data ends early — the last play in the whole "
+              f"`plays` table is only {gap_days:.1f} days before `as_of`. "
+              "Left as an open question rather than guessed at; the "
+              "mechanism was not traced further here.")
         a("")
 
-    a(f"## 4. What currently ships: where the top-{TOP_N}-by-score tracks fall")
+    a(f"## 4. Top-{TOP_N}-by-score: where it falls, and how it compares to what actually ships")
     a("")
-    a(f"Per cluster, the top {TOP_N} eligible tracks by `score` (descending) - "
-      "what `--mode rediscover` actually ranks to the front today - bucketed "
-      "the same way as §3.")
+    a(f"`top-{TOP_N}` here is **this report's own convention**, matching "
+      "evaluate.py's k=20 - it is not necessarily what the pipeline ships. "
+      "`dormancy.qualifying_clusters`'s own docstring is explicit that with "
+      "`config.BACKFILL_ENABLED = False` (current default), "
+      "`writer._select_with_backfill` returns the whole native-eligible "
+      "block **unchanged and uncapped** - there is no top-N cut in "
+      f"production at all. So the top-{TOP_N} cut below only *binds* (changes "
+      "what's shown vs. the full eligible pool) in a cluster whose eligible "
+      f"count exceeds {TOP_N}; everywhere else it is a no-op and \"top-"
+      f"{TOP_N}-by-score\" **is** what ships, in full.")
+    a("")
+    binds = m["overlap_df"][~m["overlap_df"]["forced_identical"]]
+    noop = m["overlap_df"][m["overlap_df"]["forced_identical"]]
+    if len(binds):
+        binds_list = ", ".join(
+            f"{r.name} ({r.eligible_pool} eligible)" for r in binds.itertuples()
+        )
+        a(f"**Cut binds** (eligible pool > {TOP_N}, so ships in full but "
+          f"this report's top-{TOP_N} table is a genuine truncation): {binds_list}.")
+    if len(noop):
+        noop_list = ", ".join(
+            f"{r.name} ({r.eligible_pool} eligible)" for r in noop.itertuples()
+        )
+        a(f"**Cut is a no-op** (eligible pool <= {TOP_N}, so this report's "
+          f"top-{TOP_N} table already shows everything that ships): {noop_list}.")
     a("")
     a(_md_table(m["ship_df"]))
     a("")
@@ -358,7 +400,31 @@ def build_report(as_of: pd.Timestamp) -> str:
 
     a("## 6. Overlap between §4 and §5, per cluster")
     a("")
+    a(f"`differ` is the symmetric difference (tracks unique to one side plus "
+      f"tracks unique to the other), not a fraction of {TOP_N}. "
+      "`forced_identical = True` means the eligible pool itself has "
+      f"{TOP_N} or fewer tracks, so top-by-score and top-by-dormancy are "
+      "**the same set by construction** - `overlap`/`differ` in that row "
+      "measures nothing about ranking, only that there was no ranking "
+      "decision to make. Only a `forced_identical = False` row is a genuine "
+      "comparison of the two rankings.")
+    a("")
     a(_md_table(m["overlap_df"]))
+    a("")
+    n_forced = int(m["overlap_df"]["forced_identical"].sum())
+    n_real = len(m["overlap_df"]) - n_forced
+    if n_real == 0:
+        a(f"**No cluster has a genuine ranking decision to compare at this "
+          f"as_of** — every eligible pool is {TOP_N} or smaller, so "
+          "top-by-score and top-by-dormancy are identical everywhere by "
+          "construction, not because the two rankings agree.")
+    else:
+        real_names = ", ".join(
+            r.name for r in m["overlap_df"][~m["overlap_df"]["forced_identical"]].itertuples()
+        )
+        a(f"**{n_real} of {len(m['overlap_df'])} clusters have a genuine "
+          f"ranking decision** ({real_names}); the other {n_forced} are "
+          "identical by construction (§4).")
     a("")
 
     a("## 7. Verdict — is there a population of heavily-played, 3-to-5-weeks-dormant "
@@ -366,7 +432,9 @@ def build_report(as_of: pd.Timestamp) -> str:
     a("")
     a(f"\"3-to-5-weeks-dormant\" = the `21-28` and `28-35` buckets. \"Large enough "
       f"to fill a playlist\" means at least {TOP_N} tracks from that band alone "
-      "(this report's own top-N convention, matching evaluate.py's k=20) - the "
+      "(this report's own top-N convention, matching evaluate.py's k=20 - "
+      f"not the same bar as `MIN_CLUSTER_NATIVE = {config.MIN_CLUSTER_NATIVE}`, "
+      "which only gates whether a cluster ships at all, per §2). The "
       "raw counts above let you judge against any other size directly. A count "
       f"below {TOP_N} is answered as **no**, however close: a playlist needs "
       "the full count, and `--cluster-name` ships one cluster at a time, so a "
