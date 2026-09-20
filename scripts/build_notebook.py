@@ -255,25 +255,67 @@ cells = [
     CODE("conn.close()\nprint('done')"),
 ]
 
-nb = new_notebook(cells=cells)
-nb.metadata.update(
-    {
-        "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-        "language_info": {"name": "python", "version": "3.11"},
-    }
-)
 
-OUT.parent.mkdir(parents=True, exist_ok=True)
-nbf.write(nb, OUT)
-print(f"wrote {OUT} ({len(cells)} cells)")
+class OutputWouldBeStripped(RuntimeError):
+    """Writing now would silently discard already-committed cell outputs."""
 
-if "--execute" in sys.argv:
-    from nbclient import NotebookClient
 
-    nb = nbf.read(OUT, as_version=4)
-    client = NotebookClient(
-        nb, timeout=1800, kernel_name="python3", resources={"metadata": {"path": str(OUT.parent)}}
+def _cell_outputs_exist(path: Path) -> bool:
+    """True if `path` exists and already has at least one executed code cell.
+
+    Used to refuse the write that stripped 15 cells of committed output from
+    notebooks/01_eda.ipynb - a run of this script without --execute, which
+    was only caught by `git diff`, not by anything in this script.
+    """
+    if not path.exists():
+        return False
+    old = nbf.read(path, as_version=4)
+    return any(c.get("cell_type") == "code" and c.get("outputs") for c in old["cells"])
+
+
+def build(out: Path = OUT, execute: bool = False, allow_output_loss: bool = False) -> Path:
+    if not execute and not allow_output_loss and _cell_outputs_exist(out):
+        raise OutputWouldBeStripped(
+            f"{out} already has cell outputs; writing without --execute would "
+            "blank them. Pass --execute to regenerate outputs, or "
+            "--allow-output-loss to write without them anyway."
+        )
+
+    nb = new_notebook(cells=cells)
+    nb.metadata.update(
+        {
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+            "language_info": {"name": "python", "version": "3.11"},
+        }
     )
-    client.execute()
-    nbf.write(nb, OUT)
-    print("executed and saved with outputs")
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    nbf.write(nb, out)
+    print(f"wrote {out} ({len(cells)} cells)")
+
+    if execute:
+        from nbclient import NotebookClient
+
+        nb = nbf.read(out, as_version=4)
+        client = NotebookClient(
+            nb, timeout=1800, kernel_name="python3",
+            resources={"metadata": {"path": str(out.parent)}},
+        )
+        client.execute()
+        nbf.write(nb, out)
+        print("executed and saved with outputs")
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        build(execute="--execute" in argv, allow_output_loss="--allow-output-loss" in argv)
+    except OutputWouldBeStripped as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -177,6 +177,8 @@ auto-execute as the fix."
    cells): it refused, exit code 1, and `git status --short
    notebooks/01_eda.ipynb` printed nothing - the file is untouched.
 
+Full suite with this part's test file added: 535 passed (531 + 4 new).
+
 ---
 
 ## Explicitly report-only (not fixed, per the brief)
