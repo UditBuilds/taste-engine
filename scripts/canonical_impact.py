@@ -52,16 +52,20 @@ for split in SPLITS:
     canon = scored_tracks(conn, end=split, as_of=split, canonical=True)
     true_top = set(
         canon.sort_values(["play_count", "video_id"], ascending=[False, True])
-        .head(50)["video_id"]
+        .head(config.EXCLUDE_TOP)["video_id"]
     )
     canon_keyed = add_canonical_key(canon)
     key_of = dict(zip(canon_keyed["video_id"], canon_keyed["canonical_key"]))
     top_keys = {key_of[v] for v in true_top if v in key_of}
 
-    raw_c, _, _ = rediscovery_split(conn, split, 14, 50, 30, cluster=False,
-                                    canonical=False)
-    can_c, _, _ = rediscovery_split(conn, split, 14, 50, 30, cluster=False,
-                                    canonical=True)
+    raw_c, _, _ = rediscovery_split(
+        conn, split, config.RECENCY_HALF_LIFE_DAYS, config.EXCLUDE_TOP,
+        config.EVAL_TEST_DAYS, cluster=False, canonical=False,
+    )
+    can_c, _, _ = rediscovery_split(
+        conn, split, config.RECENCY_HALF_LIFE_DAYS, config.EXCLUDE_TOP,
+        config.EVAL_TEST_DAYS, cluster=False, canonical=True,
+    )
     rows.append({
         "split": split,
         "true_top50": len(top_keys),
@@ -83,7 +87,8 @@ for split in SPLITS:
     for label, canon in (("raw", False), ("canon", True)):
         try:
             r = evaluate_rediscovery(
-                conn, split, 20, 14, strategies=["most_played", "score"],
+                conn, split, 20, config.RECENCY_HALF_LIFE_DAYS,
+                strategies=["most_played", "score"],
                 test_days=config.EVAL_TEST_DAYS, canonical=canon,
             )["results"].set_index("strategy")
             rec[f"{label}_base"] = r.loc["most_played", "ndcg@20"]
@@ -100,7 +105,10 @@ print("\n" + "=" * 76)
 print("4. REPLAY, raw vs canonical (k=50, 30-day window)")
 print("=" * 76)
 for label, canon in (("raw", False), ("canonical", True)):
-    r = evaluate(conn, k=50, test_days=30, half_life=14, canonical=canon)
+    r = evaluate(
+        conn, k=config.EVAL_K, test_days=config.EVAL_TEST_DAYS,
+        half_life=config.RECENCY_HALF_LIFE_DAYS, canonical=canon,
+    )
     res = r["results"].set_index("strategy")
     print(f"  {label:<10} tracks {r['train_tracks']:>5,}  "
           f"score nDCG {res.loc['score', 'ndcg@50']:.4f}  "

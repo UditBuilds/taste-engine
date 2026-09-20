@@ -117,12 +117,17 @@ def main() -> int:
             print(f"  {names[cid]:<45} {len(old_ids[cid]):>2} -> {len(new_ids[cid]):>2}")
         print()
 
+        # most_common()'s tie-break at the 10th/11th boundary is "first
+        # encountered in insertion order" (undocumented as stable across
+        # inputs) - the same class of ambiguity writer._modal_genre fixed by
+        # breaking ties on (highest count, then alphabetically-first key).
+        # Applied here too, generalised from picking 1 winner to picking 10.
         print("most repeated backfill tracks BEFORE (top 10):")
-        for vid, n in old_stats["freq"].most_common(10):
+        for vid, n in sorted(old_stats["freq"].items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
             title = str(rediscover_frame.loc[rediscover_frame["video_id"] == vid, "title"].iloc[0])
             print(f"  {n:>2}x  {title[:60]}  ({vid})")
         print("\nmost repeated backfill tracks AFTER (top 10):")
-        for vid, n in new_stats["freq"].most_common(10):
+        for vid, n in sorted(new_stats["freq"].items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
             title = str(rediscover_frame.loc[rediscover_frame["video_id"] == vid, "title"].iloc[0])
             print(f"  {n:>2}x  {title[:60]}  ({vid})")
     finally:

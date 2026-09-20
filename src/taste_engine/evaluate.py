@@ -196,7 +196,7 @@ def rediscovery_split(
     conn: sqlite3.Connection,
     split_date: str,
     half_life: float | None = None,
-    exclude_top: int = 50,
+    exclude_top: int = config.EXCLUDE_TOP,
     test_days: int | None = None,
     cluster: bool = True,
     canonical: bool = True,
@@ -228,10 +228,10 @@ def rediscovery_split(
 def evaluate_rediscovery(
     conn: sqlite3.Connection,
     split_date: str | None = None,
-    k: int = 20,
+    k: int = config.REDISCOVERY_K,
     half_life: float | None = None,
     strategies: list[str] | None = None,
-    exclude_top: int = 50,
+    exclude_top: int = config.EXCLUDE_TOP,
     test_days: int | None = None,
     canonical: bool = True,
     test_end: str | None = None,
@@ -297,7 +297,7 @@ def evaluate_rediscovery(
 def rediscovery_robustness(
     conn: sqlite3.Connection,
     splits: list[str] | None = None,
-    k: int = 20,
+    k: int = config.REDISCOVERY_K,
     half_life: float | None = None,
     exclude_top: int = 50,
     test_days: int | None = None,
@@ -351,7 +351,7 @@ def rediscovery_robustness(
 def rediscovery_half_life_sweep(
     conn: sqlite3.Connection,
     half_lives: list[float] | None = None,
-    k: int = 20,
+    k: int = config.REDISCOVERY_K,
     exclude_top: int = 50,
     test_days: int | None = None,
 ) -> pd.DataFrame:
@@ -397,7 +397,7 @@ def nested_rediscovery(
     conn: sqlite3.Connection,
     splits: list[str] | None = None,
     half_lives: list[float] | None = None,
-    k: int = 20,
+    k: int = config.REDISCOVERY_K,
     exclude_top: int = 50,
     test_days: int | None = None,
     min_reachable: int = 20,
@@ -769,7 +769,7 @@ def main(argv: list[str] | None = None) -> int:
         help="score the non-obvious tracks instead of replay",
     )
     parser.add_argument(
-        "--exclude-top", type=int, default=50,
+        "--exclude-top", type=int, default=config.EXCLUDE_TOP,
         help="favourites removed from the rediscovery candidate pool",
     )
     parser.add_argument(

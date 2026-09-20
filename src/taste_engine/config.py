@@ -69,6 +69,9 @@ EVAL_SPLIT_DATE = "2026-06-01"
 # 105 days saturates: the baseline scores 1.00 there, which ranks nothing.
 EVAL_K = 50
 EVAL_TEST_DAYS = 30
+# k for the rediscovery task (evaluate_rediscovery and its callers) - distinct
+# from EVAL_K, which is the replay task's k.
+REDISCOVERY_K = 20
 # How many favourites the rediscovery hold-out removes. The writer's
 # `--mode rediscover` removes the same set, so the playlist the tool ships is
 # the task the evaluation actually measures.
