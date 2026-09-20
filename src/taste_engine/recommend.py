@@ -148,12 +148,25 @@ def cluster_playlists(
     return sorted(playlists, key=lambda p: p["total_score"], reverse=True)
 
 
-def build(conn: sqlite3.Connection, half_life: float | None = None) -> pd.DataFrame:
-    """Scored + clustered tracks, the input every strategy expects."""
-    from .embed import cluster_tracks
-    from .score import scored_tracks
+def build(
+    conn: sqlite3.Connection, half_life: float | None = None, as_of=None
+) -> pd.DataFrame:
+    """Scored + clustered tracks, the input every strategy expects.
 
-    return cluster_tracks(scored_tracks(conn, half_life=half_life))
+    `as_of` defaults to the dataset's own last recorded play
+    (`score.last_played_at`), not wall-clock - a deliberate behaviour
+    change for every caller of `build()` (`writer.plan()`, `cli.cmd_clusters`,
+    this module's own CLI, and every script that imports `build`), made
+    because on a static export the previous wall-clock default made every
+    score keep decaying for calendar days the dataset has no knowledge of.
+    Pass an explicit `as_of` to override.
+    """
+    from .embed import cluster_tracks
+    from .score import last_played_at, scored_tracks
+
+    if as_of is None:
+        as_of = last_played_at(conn)
+    return cluster_tracks(scored_tracks(conn, as_of=as_of, half_life=half_life))
 
 
 def main() -> int:

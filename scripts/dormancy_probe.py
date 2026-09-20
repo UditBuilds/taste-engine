@@ -27,6 +27,7 @@ import pandas as pd
 from taste_engine import config, dormancy as d
 from taste_engine.db import connect
 from taste_engine.embed import artist_from_channel
+from taste_engine.score import last_played_at
 
 REPORT_PATH = Path(__file__).resolve().parents[1] / "reports" / "dormancy_probe.md"
 
@@ -156,10 +157,17 @@ def _display_list(ranked: pd.DataFrame, n: int = TOP_N) -> pd.DataFrame:
     return out
 
 
-def build_report() -> str:
+def build_report(as_of: pd.Timestamp | None = None) -> str:
+    """Defaults to the dataset's own last recorded play
+    (`score.last_played_at`), not wall-clock - same reasoning and same
+    source as `recommend.build()`'s default (briefs/asof_core_and_dormancy.md,
+    Part A). Pass an explicit, tz-aware value (or use `--as-of`) to pin a
+    different one.
+    """
     conn = connect()
     try:
-        as_of = pd.Timestamp.now(tz="UTC")
+        if as_of is None:
+            as_of = pd.Timestamp(last_played_at(conn))
         frame_full, frame_excl, obvious = d.build_frames(conn, as_of=as_of)
         qualifying = d.qualifying_clusters(frame_excl)
         qualifying_ids = set(qualifying["cluster"])
@@ -481,8 +489,25 @@ def build_report() -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
-    text = build_report()
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Dormancy probe")
+    parser.add_argument(
+        "--as-of",
+        help="Pin the analysis 'now' to this ISO date/timestamp (UTC assumed "
+             "if no offset is given) instead of the dataset's own last "
+             "recorded play. Every figure in the report is as_of-dependent, "
+             "so runs at different --as-of values are not comparable. Omit "
+             "to default to MAX(watched_at).",
+    )
+    args = parser.parse_args(argv)
+    as_of = None
+    if args.as_of:
+        as_of = pd.Timestamp(args.as_of)
+        as_of = as_of.tz_localize("UTC") if as_of.tzinfo is None else as_of.tz_convert("UTC")
+
+    text = build_report(as_of=as_of)
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(text, encoding="utf-8")
     print(f"wrote {REPORT_PATH} ({len(text):,} bytes)")

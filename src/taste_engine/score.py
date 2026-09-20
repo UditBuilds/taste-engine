@@ -65,6 +65,19 @@ def _as_datetime(value) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def last_played_at(conn: sqlite3.Connection) -> datetime:
+    """The dataset's own last recorded play, tz-aware UTC.
+
+    The right default "now" for a static, Takeout-derived export: the plays
+    table does not grow between exports, so anchoring recency to wall-clock
+    instead makes every score keep decaying for calendar days the dataset
+    has no knowledge of. Used by `recommend.build()`'s own `as_of` default -
+    see there for which callers this changes.
+    """
+    raw = conn.execute("SELECT MAX(watched_at) FROM plays").fetchone()[0]
+    return _as_datetime(raw)
+
+
 def add_scores(
     df: pd.DataFrame,
     as_of=None,
