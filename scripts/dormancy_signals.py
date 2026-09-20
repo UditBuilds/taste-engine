@@ -104,18 +104,33 @@ def _track_display(table: pd.DataFrame, with_label: bool = True) -> pd.DataFrame
     )
 
 
+def _last_play_at(conn) -> pd.Timestamp:
+    """The dataset's own last recorded play, tz-aware UTC.
+
+    The plays table stopped growing on 2026-09-13T07:24:35Z. Anchoring the
+    default `as_of` to wall-clock instead put the entire 0-7 day recency
+    bucket permanently outside the data for every run since - every
+    "played in the last N days" figure computed that way understated
+    recency by however many days had passed since the export, silently.
+    """
+    raw = conn.execute("SELECT MAX(watched_at) FROM plays").fetchone()[0]
+    ts = pd.Timestamp(raw)
+    return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+
+
 def build_report(as_of: pd.Timestamp | None = None) -> str:
     """Every figure below is `as_of`-dependent - recency windows, days-since,
     and what counts as "shipped" right now are all relative to it. A report
     generated at one `as_of` is not comparable to one generated at another.
 
-    Defaults to wall-clock (`pd.Timestamp.now(tz="UTC")`), matching every
-    existing caller; pass an explicit, tz-aware value for a reproducible,
-    pinned run.
+    Defaults to the dataset's own last recorded play (`MAX(watched_at)` in
+    `plays`, via `_last_play_at`), not wall-clock - see that function's
+    docstring for why. Pass an explicit, tz-aware value to pin a different
+    one; `--as-of` on the CLI does this.
     """
     conn = connect()
     try:
-        as_of = pd.Timestamp.now(tz="UTC") if as_of is None else as_of
+        as_of = _last_play_at(conn) if as_of is None else as_of
         frame_full, frame_excl, obvious = d.build_frames(conn, as_of=as_of)
         key_of = d.canonical_key_of(conn)
         plays_by_key = d.plays_by_canonical_key(conn, key_of)

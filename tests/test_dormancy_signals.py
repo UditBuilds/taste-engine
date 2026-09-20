@@ -56,7 +56,14 @@ class TestMdTableIntegerPreservation:
 # snapshot of when the script happened to run, not a property of the
 # dataset - and nothing recorded that this was so. Fixed by threading an
 # optional `as_of` through `build_report`/`main --as-of`, defaulting to the
-# original wall-clock behaviour when omitted, so no existing caller changes.
+# original wall-clock behaviour when omitted, so no existing caller changed.
+#
+# --- default anchor (brief: deferred_constants, Part C, 2026-09-20) ---------
+# The plays table stopped growing on 2026-09-13T07:24:35Z; defaulting to
+# wall-clock put the entire 0-7 day recency bucket permanently outside the
+# data for every omitted-as_of run since. The default (only - explicit
+# `as_of`/`--as-of` is unchanged) now resolves to `MAX(watched_at)` via
+# `_last_play_at` instead - see that function's docstring.
 
 AS_OF_LABEL_PREFIX = '- `as_of` pinned for every "current"/live number below: `'
 
@@ -89,13 +96,22 @@ class TestAsOfReproducibility:
         late = signals.build_report(as_of=pd.Timestamp("2026-08-01", tz="UTC"))
         assert strip_timestamp_lines(early) != strip_timestamp_lines(late)
 
-    def test_default_as_of_omitted_falls_back_to_wall_clock(self, db):
-        before = pd.Timestamp.now(tz="UTC")
+    def test_default_as_of_omitted_falls_back_to_the_datasets_last_play(self, db):
+        """Not wall-clock (see the Part C comment above `TestAsOfReproducibility`):
+        the default must equal MAX(watched_at), independently recomputed here
+        via the same query C1 of that brief used, not assumed from the fix's
+        own implementation."""
+        raw = db.execute("SELECT MAX(watched_at) FROM plays").fetchone()[0]
+        expected = pd.Timestamp(raw)
+        expected = (
+            expected.tz_localize("UTC") if expected.tzinfo is None
+            else expected.tz_convert("UTC")
+        )
+
         text = signals.build_report()
-        after = pd.Timestamp.now(tz="UTC")
         line = next(l for l in text.splitlines() if l.startswith(AS_OF_LABEL_PREFIX))
         used = pd.Timestamp(line[len(AS_OF_LABEL_PREFIX):-1])
-        assert before <= used <= after
+        assert used == expected
 
     def test_cli_as_of_flag_threads_through_main(self, db, tmp_path, monkeypatch):
         monkeypatch.setattr(signals, "REPORT_PATH", tmp_path / "report.md")
