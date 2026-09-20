@@ -171,3 +171,113 @@ code change plus a trace, not a re-publication. Whether/when to regenerate
 `backfill_plan.md`/`genre_coverage.md` against the new anchor is a decision
 for whoever picks this up next, same as `briefs/deferred_constants.md` left
 `dormancy_signals.md` for.
+
+---
+
+## Pre/Part-B check: live-write dry-run diff, requested separately after A4
+
+Requested before starting Part B, as an end-to-end sanity check on A2's
+change to the actual write path (`writer.plan()`), independent of anything
+`nested_eval.py` exercises. Executed with a temporary git worktree, removed
+afterward; nothing pushed; Part B not started.
+
+### Confirming the run.sh / 399dc2f claim - true, but not sufficient on its own
+
+`399dc2f` (Udit, 2026-09-19, "Part C1: replace 18 hardcoded
+`/mnt/c/Users/uditk/...` paths with dynamic resolution") is confirmed an
+ancestor of `9791196` - the fix is present at the commit this brief's
+BEFORE state needed. Empirically confirmed too, not just via `git
+merge-base`: invoking `<worktree>/scripts/run.sh -c "import os;
+print(os.getcwd())"` from a worktree checked out at `9791196` printed the
+**worktree's own path**, not main's.
+
+**That is not the whole story, and trusting it alone would have produced a
+silently-wrong BEFORE capture.** `taste_engine` is installed editable into
+the shared venv, pointing at an absolute path
+(`/mnt/c/Users/uditk/Projects/taste-engine/src/...`) baked in at install
+time - independent of process cwd. Proved this empirically before trusting
+anything further: ran `<worktree>/scripts/run.sh -c "import
+taste_engine.recommend as r; import inspect; print(r.__file__,
+'as_of' in inspect.signature(r.build).parameters)"` from the 9791196
+worktree. Result: **resolved from
+`/mnt/c/Users/uditk/Projects/taste-engine/src/taste_engine/recommend.py`**
+(main, not the worktree) **with
+`as_of` already present** - i.e., a naive "worktree + `scripts/run.sh`"
+capture would have silently tested the AFTER code while believing it was
+testing BEFORE. `run.sh`'s fix is real and correctly scoped to what it
+claims (shell cwd); it does not and cannot reach into how Python's import
+system resolves an editable install. Worth carrying forward:
+**`scripts/run.sh` alone is not sufficient to test a worktree's Python
+code in this repo** - anything importing `taste_engine` needs an explicit
+`sys.path.insert(0, "<worktree>/src")` ahead of the editable install, or a
+separate venv `pip install -e`'d from the worktree.
+
+### Method
+
+Neither capture used `scripts/run.sh`, for the reason above. One
+throwaway script (`capture_dry_run.py`, scratchpad only, not part of the
+repo), run twice with `~/.venvs/taste-engine/bin/python` directly and
+`--root` pointed at the worktree (BEFORE) or the main checkout (AFTER):
+
+1. Sets `TASTE_DB` to the main checkout's real database
+   (`/mnt/c/Users/uditk/Projects/taste-engine/data/taste.db`) **before**
+   any `taste_engine` import, so both captures score the identical data -
+   the only variable is the code.
+2. `sys.path.insert(0, "<root>/src")` before importing `taste_engine`.
+3. **Hard assertion 1:** `taste_engine.__file__` resolves under `<root>`.
+   Both passed (worktree path for BEFORE, main path for AFTER).
+4. **Hard assertion 2, on the thing actually being measured:**
+   `"as_of" in inspect.signature(recommend.build).parameters` equals the
+   expected value (`False` for BEFORE, `True` for AFTER). Both passed.
+5. Calls `writer.plan(conn, cluster_name=..., mode="rediscover")` directly
+   for `"Travis Scott"` and `"T-Series"` (both resolved without
+   `WriteBlocked`), and serializes rank/video_id/score/title - membership
+   and ordering are then comparable by construction, with no CLI/argparse
+   formatting in between.
+
+### Result
+
+| cluster | before count | after count | delta | ordering of common tracks | score ratio (after/before) |
+|---|---|---|---|---|---|
+| Travis Scott | 16 | 21 | **+5** | unchanged (verified: identical relative order for all 16 shared tracks) | uniform **1.42430** across all 16 |
+| T-Series | 13 | 22 | **+9** | unchanged (verified: identical relative order for all 13 shared tracks) | uniform **1.42431** across all 13 |
+
+**Nothing reordered. Membership grew, in both clusters, via the `MIN_SCORE`
+floor.** Every track present in BEFORE is present in AFTER, in the same
+relative position - the diff's only content is (a) a uniform score
+multiplier and (b) new tracks appended below the previously-last-eligible
+one. This matches the model's own arithmetic exactly, not a coincidence:
+`score = log1p(plays) * 0.5^(days_since/14)`; moving the anchor 7 days
+earlier (2026-09-13 vs. wall-clock at capture time, ~2026-09-20) shifts
+every track's `days_since` down by the same ~7.1 days, which multiplies
+every score by the same `0.5^(-7.1/14) ≈ 1.424` - confirmed to 5 decimal
+places, identical for both clusters (both captures ran against the same
+wall-clock instant). A uniform multiplier cannot reorder anything; it can
+only push tracks that were just below `MIN_SCORE = 0.5` over it, which is
+exactly what happened - all 14 new tracks (5 Travis Scott, 9 T-Series) sit
+in the after-score range 0.52-0.70, i.e. within reach of a ~1.42x lift
+from just under the floor.
+
+New tracks, Travis Scott (5): SZA - Open Arms (ft. Travis Scott), NEMZZZ -
+GASS (feat. Travis Scott), sdp interlude, Travis Scott - STOP TRYING TO BE
+GOD, FLORIDA FLOW.
+
+New tracks, T-Series (9): Ishq Shava, Subhanallah, Tujhe Sochta Hoon, Yaar
+Bathere, Tere Liye, Saibo, Raabta, Chahun Main Ya Naa, Yeh Fitoor Mera.
+
+**Consequence for the live write path, not exercised further here:**
+`writer._target_length()` derives target playlist length from native
+count, so a cluster-scoped write today will ship a **longer** playlist
+than the same request would have under the old wall-clock default, for
+any cluster with tracks sitting just under `MIN_SCORE`. This is the direct,
+concrete form of A2's "deliberate behaviour change for every caller" -
+measured on the two clusters requested, not generalised to every cluster
+in the library.
+
+### Cleanup
+
+`git worktree remove <path>` then `git worktree prune`;
+`git worktree list` confirmed only `main` and the pre-existing,
+untouched `worktree-backfill-toggle` remain. `git status --short` on
+main was clean before, during, and after. Nothing pushed. Part B not
+started.
