@@ -53,8 +53,18 @@ def iso_seconds(duration):
 
 conn = connect()
 songs = scored_tracks(conn)          # canonical, music-labelled
+# `duration` is not selected here: `scored_tracks()` already carries it (the
+# representative upload's own `video_metadata.duration`, joined in before
+# collapse - added for canonical.py's duration-merge pass, unrelated to this
+# script). Re-selecting it here used to collide unsuffixed into `duration_x`/
+# `duration_y`, and line 73's bare `songs["duration"]` crashed with
+# `KeyError: 'duration'` - found while re-deriving this script's own output
+# for the README inventory (briefs/readme_final.md, Part 0), unrelated to the
+# hardcoded-denominator fix below. Not a stale-vs-fresh question: the two
+# columns were always the same value for the same video_id, so dropping the
+# redundant one loses nothing.
 meta = pd.read_sql(
-    "SELECT video_id, category_id, duration, title AS api_title FROM video_metadata",
+    "SELECT video_id, category_id, title AS api_title FROM video_metadata",
     conn,
 )
 songs = songs.merge(meta, on="video_id", how="left")
@@ -175,7 +185,7 @@ for _, r in out.head(25).iterrows():
     mins = f"{int(r.seconds // 60)}m" if r.seconds == r.seconds and r.seconds else "  ?"
     print(f"  {r['sig']}  {mins:>4}  {str(r['title'])[:58]}")
 print("\n" + "=" * 78)
-print("5. CONTAMINATION ESTIMATE OVER ALL 3,143 SONGS")
+print(f"5. CONTAMINATION ESTIMATE OVER ALL {total:,} SONGS")
 print("=" * 78)
 not_song = songs["suspicious_title"] | songs["over_15min"]
 api_bad = songs["api_resolved"] & ~songs["api_says_music"]
