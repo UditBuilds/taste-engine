@@ -9,6 +9,7 @@ script without turning `scripts/` into a package or touching
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -144,3 +145,40 @@ class TestMdTableIntegerPreservation:
 
     def test_empty_frame(self):
         assert probe._md_table(pd.DataFrame(columns=["a", "b"])) == "*(none eligible)*"
+
+
+# --- prose/table agreement regression (finish_regeneration.md, Part A3) ----
+# Section 5's "hard dormancy ceiling" sentence used to hardcode "8", "0.27%"
+# and "at most 1" as literal text, disconnected from the pool table it sits
+# next to - so when the anchor moved to MAX(watched_at) and the table's
+# N=365 row went to zero, the prose kept asserting 8. Guards against that
+# recurring by parsing both the sentence and the table out of one real
+# build_report() call and requiring them to agree, whatever today's actual
+# figures are.
+
+class TestN365ProseMatchesTable:
+    def test_prose_figures_equal_table_figures(self, db):
+        text = probe.build_report()
+
+        m = re.search(
+            r"library-wide, only (?P<lib>\d+) of [\d,]+ canonical tracks "
+            r"\((?P<pct>[\d.]+)%\) exceed it at all, and at most "
+            r"(?P<qual>\d+) falls within any single qualifying cluster",
+            text,
+        )
+        assert m, "N=365 'hard dormancy ceiling' sentence not found or changed shape"
+
+        header_idx = text.index("### Pool size per N")
+        row_365 = next(
+            line for line in text[header_idx:].splitlines()
+            if line.startswith("| 365 |")
+        )
+        cells = [c.strip() for c in row_365.strip("|").split("|")]
+        # N | library_wide_eligible | pct_of_library | invisible_under_floor
+        # | in_noise_cluster(-1) | in_qualifying_cluster | in_nonqualifying_cluster
+        # | five_probe_clusters_subtotal
+        table_lib, table_pct, table_qual = cells[1], cells[2], cells[5]
+
+        assert m.group("lib") == table_lib
+        assert m.group("pct") == table_pct
+        assert m.group("qual") == table_qual

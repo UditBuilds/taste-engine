@@ -441,6 +441,7 @@ def build_report(as_of: pd.Timestamp | None = None) -> str:
 
     a("## 5. Not in the brief's five questions, but mechanical and worth recording")
     a("")
+    n365 = pool_df[pool_df["N"] == 365].iloc[0]
     a(f"**The dataset has a hard dormancy ceiling.** The Takeout export spans "
       f"{export_span.days} days, {export_span.seconds // 3600} hours "
       f"(earliest `first_played` to latest `last_played`, library-wide) - "
@@ -448,10 +449,18 @@ def build_report(as_of: pd.Timestamp | None = None) -> str:
       f"description. `days_since_last_play` cannot exceed that span by more "
       f"than the gap between the last recorded play and this report's "
       f"`as_of`. N=365 is therefore asking for dormancy longer than the "
-      f"watch history itself: library-wide, only 8 of {len(frame_full):,} "
-      f"canonical tracks (0.27%) exceed it at all, and at most 1 falls "
+      f"watch history itself: library-wide, only {int(n365['library_wide_eligible'])} of "
+      f"{len(frame_full):,} canonical tracks ({n365['pct_of_library']}%) exceed it at "
+      f"all, and at most {int(n365['in_qualifying_cluster'])} falls "
       f"within any single qualifying cluster. This is a property of how "
       f"long the export is, not of these five clusters specifically.")
+    a("")
+    a("At N=365 no track qualifies, because the export spans 362 days and "
+      "dormancy is measured from the last recorded play. The 8 tracks "
+      "reported before the anchor fix (commit cd1b28d) existed only "
+      "because the anchor sat about three days past the end of the data. "
+      "The direction stays closed; the reason is now structural rather "
+      "than a small count.")
     a("")
     a("**Each cluster's own dormancy ceiling tracks when that artist was "
       "first played, not any later listening pattern:**")
