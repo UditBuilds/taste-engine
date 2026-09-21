@@ -46,7 +46,7 @@ not when it was abandoned. The signal doesn't exist in this data. A narrower fol
 
 **Recency exclusion (`reports/recency_exclusion.md`).** Hypothesis: drop anything played in the last 30–90 days to force older songs through. At 30 days, 1 of 198 eligible songs survives; at 60 and 90, none. The score floor is already a recency filter, so stacking a second one empties the pool.
 
-**Backfill as a feature.** The cumulative result of the above: `BACKFILL_ENABLED` is
+**Backfill as a feature (`reports/backfill_plan.md`).** The cumulative result of the above: `BACKFILL_ENABLED` is
 `False`. The FLOOR / LENGTH / GUARD / RANK / CEILING machinery is still in the codebase,
 tested and unreached, because the architecture is sound and the input signals are not.
 Playlists ship native-only and return short rather than padding.
