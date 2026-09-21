@@ -544,3 +544,126 @@ rather than folded silently into the same bucket as the §1 figures, since
 the call is closer than those.
 
 **No STOP.** Proceeding to Part C.
+
+---
+
+## Part D — close-out
+
+### Every figure changed: old → new → source
+
+| figure | old | new | source |
+|---|---|---|---|
+| Directions count (opening) | "Five" | "Six" | `recency_exclusion.md:72` self-count + C3's new entry |
+| Dev-split lift (§1.2) | +22.1% | +18.3% | `rediscovery_headline.md:99-105` |
+| Duration-merge count (§1.6) | 14 further merges | 17 further merges | `reports/duration_merge_report.txt` |
+| False-merge rate (§1.6) | 2 of 14 (14%) | 2 of 17 (12%) | `reports/duration_merge_report.txt` |
+| Lost-at-0s-tolerance (§1.6) | six of the twelve | eight of the fifteen | `reports/duration_merge_report.txt` |
+| "the honest summary" lift (§2) | +121% (×2 in one sentence) | +139.7% (×2) | `rediscovery_headline.md:116-119` |
+| Recall@20 cap (§2) | ~4.4% | ~5.5% | `rediscovery_headline.md:86-92` |
+| Reachable range (§2) | 296–496 | 212–365 | `rediscovery_headline.md:86-92` |
+| §3 music plays | 10,539 (25.9%) | 10,319 (25.4%) | `reports/readme_facts.md` |
+| Playlist title repeats (§4) | five more ×2 | eight more ×2 | `reports/readme_facts.md` |
+| % played once, scoring para (§6) | 60% | 61.6% (raw frame, by instruction) | `reports/readme_facts.md` |
+| Top-20 share, scoring para (§6) | 9.6% | 9.0% (raw frame, by instruction) | `reports/readme_facts.md` |
+| half_life selected (§6) | 30 days | 14 days | `rediscovery_headline.md` / `config.py:63` |
+| Genre tag count (§6) | 35 distinct tags | 36 distinct tags | `reports/readme_facts.md` |
+| Genre coverage (§6) | 95% | 96.2% | `genre_coverage.md:41` |
+| `normalise_title` status (§6) | "currently unfixed" | "since fixed" | CLAUDE.md State (2026-09-16), `normalise_title_fix.md` |
+| `test_writer.py` count (§8) | 76 tests | 85 tests | `grep -c "def test_" tests/test_writer.py` |
+| Total test count (§9, §10) | 337 tests (×2) | 538 tests (×2) | `pytest --collect-only -q` |
+| `contamination.py` denominator | hardcoded "3,143" | interpolated, reads "2,918" today | Part A fix, `reports/contamination.txt` |
+
+New content inserted, not a figure change: C2's §1 disclaimer paragraph;
+C3's Recency exclusion entry; C4's dormancy-distribution follow-up
+sentence; C5's eligibility-drift limitations bullet.
+
+### Every item listed-not-fixed, grouped by reason
+
+**PAST-STATE inside §1 — covered by C2's new disclaimer, left untouched:**
+0.270→0.339 half-life-leak demo; the leaked-into-raw-pool table
+(35/34/34/36/37); "70% of favourites surviving"; baseline nDCG
+0.29–0.46→0.11–0.17; "3,570 tracks → 3,143 songs" and its three companion
+figures (359 multi-upload, 102 distinct-song pairs, 7 cross-artist groups);
+the §1.4 split table; "176 of 3,143" and "121 categoryId-alone"; "202
+songs/220 plays/1.1 mean" (both occurrences); "pool shrinks
+−123/−136/−163"; "best rank 209"; the pre-fix 0.3343/0.1466 pair.
+
+**PAST-STATE outside §1 — not covered by C2, left and listed per C7:**
+"every strategy scores 1.00" on the ungraded replay task (§2, close call —
+see B3 discussion above); the raw-384-d clustering row (§6, kept as a
+negative comparison, never was a current-pipeline output); "38 clusters
+over 2,858 tracks, 39.6% outliers" and its companion table row "PCA 20-d →
+38 clusters, 15.6% largest" (§6 — left as one unit; a partial swap would
+pair the current cluster count, 37, with an unverified stale percentage
+from the old 2,858-track run); "23 of 50 / 5 of 50" and "ten distinct
+tracks across fifty-two slots" (§8, both already flagged in
+`readme_audit.md` 2026-09-14 as describing the superseded top-N-by-score
+writer, pre-FLOOR/LENGTH/GUARD/RANK/CEILING); "37 distinct songs → 48"
+(§8, same superseded mechanism — confirmed by a bounded reconstruction
+attempt in Part 0 that gave 47/50, not 37/48).
+
+**NEEDS-NEW-CODE:** "369 of 970 test songs never seen in training" (§2) —
+would need re-running `evaluate.split_frames` and diffing train/test
+vocabularies; eval internals are explicitly out of scope.
+
+**Out of scope (backfill_plan.md / genre_coverage.md regeneration
+excluded):** "five of the ten qualifying clusters have no discriminative
+genre" (§8) — not restated in `backfill_plan.md` at HEAD, and that report's
+regeneration is explicitly excluded. All of §8's backfill worked examples
+(Joji, T-Series) are CURRENT against `backfill_plan.md` as it stands, but
+that report is itself flagged ANCHOR-DEPENDENT / INDETERMINATE by
+`gate_drift_audit.md` row 7 — carried forward, not re-litigated, since
+regenerating it is out of scope for this brief.
+
+### Stale items found in CLAUDE.md (not edited, per instruction)
+
+- **Decisions table, `STRICT_MUSIC = True` row:** "5.6% contamination; the
+  permissive signal is categoryId (**121 of 127**), not playlists (5)."
+  Same family as README's now-PAST-STATE §1.5 figures — this session's
+  Part A work found the mechanism (canonicalisation drift plus
+  `contamination.py` inheriting `STRICT_MUSIC`'s current default rather
+  than the `False` it was almost certainly measured under; see the "3,143
+  chain" section above). Not edited — CLAUDE.md is explicitly
+  do-not-edit for this brief.
+- **State section, "Dataset-scale figures" bullet (line ~195):** states
+  the 3,143 canonical-song figure "is off by 225 and unreconciled through
+  STRICT_MUSIC-off or any other filter variant tried." This session's Part
+  0 work resolves the mechanism (225 = 3,143 − 2,918, a `STRICT_MUSIC`
+  regime difference, not unexplained drift; the residual 3,143-vs-3,136
+  gap under the closest same-regime reconstruction is attributable to two
+  documented `normalise_title`/`strip_artist_from_title` fixes since). The
+  word "unreconciled" is therefore itself now stale, though the surrounding
+  facts (40,617 vs 40,619, 30,438 vs 30,440) are unaffected and still
+  correctly described. Not edited.
+- Historical test-count mentions elsewhere in CLAUDE.md (424, 467, 480,
+  509, 513 tests at various dated commits) are **not** flagged as stale —
+  each is explicitly tied to a specific past session/commit, which is the
+  correct, self-consistent use of a point-in-time figure, unlike README's
+  undated "337 tests" claim.
+
+### Other literal-figure prints found in scripts/ during Part A
+
+One found beyond `contamination.py:178` (fixed in Part A):
+`scripts/ground_truth_audit.py:284` hardcodes "the 486" in a
+`print(f"...")` banner describing the ground-truth pool size, immediately
+followed by a dynamically-computed value on the same line
+(`n_distinct_representatives`). Same defect *shape* as the fixed
+`contamination.py` bug — a literal number in prose text sitting next to a
+computed one — but not verified for staleness and not fixed; listed only,
+per Part A's explicit "list them, fix none." (`lastfm_coverage.py:207`'s
+"429" was checked and ruled out — it is an HTTP status code in "429/
+rate-limited errors," not a stale data figure.)
+
+### Full suite
+
+Run to completion after Part C's edits (README/inventory changes only, no
+code touched since Part A/B): **538 passed, 0 failed** (292.16s). Starting
+count was 536; Part A's `tests/test_contamination.py` added 2 — matches
+exactly, no regressions from Part C's documentation-only changes.
+outside §1 so C2's blanket disclaimer does not cover it. Treated as
+PAST-STATE, left and listed per C7's "PAST-STATE outside §1 → leave and
+list" rule, **not** treated as a B3 stop — but surfaced explicitly here
+rather than folded silently into the same bucket as the §1 figures, since
+the call is closer than those.
+
+**No STOP.** Proceeding to Part C.
