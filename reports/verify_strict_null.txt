@@ -1,0 +1,40 @@
+==============================================================================
+CHECK 1 — does the filter remove anything at all?
+==============================================================================
+  canonical songs, union    3,119
+  canonical songs, strict   2,918
+  removed                     201  (6.4%)
+  plays removed               220  (mean 1.1 plays per removed song)
+  => PASS: the filter removes songs
+
+==============================================================================
+CHECK 2 — does the EVALUATED pool shrink at every split?
+==============================================================================
+  If these are identical, the filter is not on the eval path and any
+  null result is meaningless.
+
+     split  cands_union  cands_strict  cands_delta  truth_union  truth_strict  truth_delta
+2026-06-01         2138          2016         -122          848           835          -13
+2026-07-01         2541          2406         -135          437           410          -27
+2026-08-01         2715          2553         -162          712           687          -25
+
+  => PASS: the pool shrinks at 3/3 splits
+
+==============================================================================
+CHECK 3 — where in the ranking does the removed material sit?
+==============================================================================
+     split  removed_in_pool  in_top_20  in_top_100  best_rank  in_reachable_truth
+2026-06-01              122          0           0        572                   0
+2026-07-01              135          0           0        270                   1
+2026-08-01              162          0           0        172                   1
+
+  => removed songs never enter the top 20: yes
+     best rank any removed song achieves: 172 of ~2,000+
+
+==============================================================================
+VERDICT
+==============================================================================
+  The filter reaches the evaluated set (pool shrinks 123-163 songs
+  per split) and the metric still does not move. The contamination
+  is real but sits in the tail, far below top-k, so it never enters
+  a 20-item recommendation. The null is a finding, not an artefact.

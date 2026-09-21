@@ -1,0 +1,88 @@
+==============================================================================
+1. THE MUSIC SET — 2,918 canonical songs
+==============================================================================
+  resolved by the API         2,911
+  categoryId == 10 (music)    2,860  (98.0%)
+  categoryId says NOT music      51
+  unresolved (deleted etc.)       7
+
+==============================================================================
+2. WHICH SIGNAL ADMITS NON-MUSIC?
+==============================================================================
+  'only signal' = songs this signal alone admitted; without it they
+  would not be in the set at all. That is where a permissive rule shows.
+
+                     signal  songs  api_not_music  pct_bad  only_signal  suspicious_title  over_15min
+Channel ends with '- Topic'   2113              0      0.0            0                 2           1
+    Channel contains 'VEVO'    254              2      0.8            1                 0           0
+Played on music.youtube.com   2235             45      2.0           51                 2           3
+Video appears in a playlist    737              5      0.7            5                 2           5
+  Video in YT Music library    118              0      0.0            0                 0           0
+      categoryId == 10 only    413              0      0.0          413                 3           0
+
+==============================================================================
+3. WHICH PLAYLISTS CONTRIBUTE NON-MUSIC?
+==============================================================================
+            songs_in_set  api_not_music  pct
+Playlist A            14              0  0.0
+Playlist E            52              0  0.0
+Playlist F             6              0  0.0
+Playlist G            31              0  0.0
+Playlist H            10              0  0.0
+Playlist I            40              0  0.0
+Playlist J            52              0  0.0
+Playlist K             5              0  0.0
+Playlist M           110              0  0.0
+Playlist O             7              0  0.0
+
+==============================================================================
+4. RANDOM SAMPLE OF 100, MOST SUSPICIOUS FIRST
+==============================================================================
+  flagged by at least one signal: 5/100
+  flags = Topic Vevo Host Playlist Library Api  (A=music, -=not, ?=unresolved)
+
+  ..H..-   25m  Songs to destroy your PR, Powerful Gym Playlist
+  ..H..-    3m  4 Raws (Remix) - EsDeeKid & Timothée Chalamet (Full Versio
+  ..H..-    2m  Audio to Break Your Limits (Pt. 2) x Nightcrawler - Travis
+  .....A    1m  Anuv jain - Maula Guitar Chords & Strumming #shorts
+  ..H..-    2m  Future - Cinderella (Visualizer) Feat. Metro Boomin & Trav
+  .V...A    5m  Travis Scott - SICKO MODE (Official Video) ft. Drake
+  T.H..A    2m  The Percocet & Stripper Joint
+  .....A    1m  When everyone sings Saiyaara with you❤️😭 #shorts
+  .V...A    3m  Doja Cat - Say So (Official Video)
+  .....A    4m  Drake - 9
+  .V...A    4m  The Weeknd - Save Your Tears (Official Music Video)
+  .V...A    3m  The Neighbourhood - Softcore (Official Audio)
+  T.H..A    3m  DOLLAZ ON MY HEAD (feat. Young Thug)
+  T.H..A    2m  Babam Bam (From "Mtv Hustle 2.0")
+  T.HP.A    4m  Ajab Si
+  T.H..A    3m  Dreams
+  T.H..A    3m  Power
+  ..H..A    2m  Ken Carson - ss (guitar remix)
+  T.H..A    2m  Glorious
+  ..H..A    5m  Teri Meri Kahaani Hai Baarishon Ka Paani - Arijit Singh | 
+  T.HP.A    3m  Trance
+  T.H..A    4m  Pal Pal Har Pal
+  T.H..A    5m  Tu Hi Hai
+  T.HPLA    2m  Hurts Me
+  .....A    2m  Lil Peep - Benz Truck Pt. 2 (Official Video)
+
+==============================================================================
+5. CONTAMINATION ESTIMATE OVER ALL 2,918 SONGS
+==============================================================================
+  categoryId says not music           51  (1.7%)
+  title looks like a non-song          6  (0.2%)
+  longer than 15 minutes               8  (0.3%)
+  shorter than 45 seconds              1  (0.0%)
+  ANY of the above                    58  (2.0%)  <- upper bound
+
+  Of the songs flagged by title or duration, how many did each
+  signal admit *alone*:
+    Channel ends with '- Topic'        0
+    Channel contains 'VEVO'            0
+    Played on music.youtube.com        1
+    Video appears in a playlist        5
+    Video in YT Music library          0
+    categoryId == 10 alone             3   <- the permissive one
+
+  full sample written to /mnt/c/Users/uditk/Projects/taste-engine/data/contamination_sample.csv (gitignored)

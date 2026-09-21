@@ -1,0 +1,78 @@
+==============================================================================
+1. HOW MUCH THE DURATION PASS MERGES
+==============================================================================
+  canonical songs, artist rule only    2,935
+  canonical songs, + duration pass     2,918
+  additional merges                       17
+  songs with no runtime (never merge)      9
+  tolerance                                3s
+
+==============================================================================
+2. EVERY NEW MERGE — eyeball for false positives
+==============================================================================
+  17 groups gained a member
+
+  [1s spread] 21savage|21 savage all of me
+      3:20  21 Savage - all of me (Official Audio)                   | 21SavageVEVO
+      3:21  21 Savage - all of me (Lyrics)                           | Vibe Music
+  [0s spread] arijit singh|raabta
+      4:04  Raabta                                                   | Arijit Singh - Topic
+      4:04  Raabta                                                   | Pritam - Topic
+  [0s spread] atif aslam|woh lamhe woh baatein
+      5:21  Woh Lamhe Woh Baatein (From "Zeher")                     | Atif Aslam - Topic
+      5:21  Woh Lamhe Woh Baatein                                    | Roop Kumar Rathod - To
+  [0s spread] dave|sprinter
+      3:50  Sprinter                                                 | Dave - Topic
+      3:50  Sprinter                                                 | Release - Topic
+  [2s spread] drillusion|21 savage doja cat n h i e
+      2:26  21 Savage, Doja Cat - n.h.i.e. (Official Audio)          | 21SavageVEVO
+      2:24  21 Savage & Doja Cat – n.h.i.e. | Letra                  | drillusion
+  [103s spread] eminem|lucky you
+      4:06  Lucky You (Feat. Joyner Lucas) [Official Audio]          | EminemMusic
+      5:49  Eminem - Lucky You (Official Music Video) ft. Joyner Luc | EminemVEVO
+  [1s spread] joji|demons
+      2:58  Demons                                                   | Imagine Dragons - Topi
+      2:57  Demons                                                   | Joji - Topic
+  [3s spread] lil uzi vert|flex up
+      2:48  FLEX UP                                                  | Lil Uzi Vert - Topic
+      2:51  Flex Up                                                  | Lil Yachty - Topic
+  [0s spread] mutant z edits|hoyoverse
+      2:16  #hoyoverse                                               | Mutant Z Edits
+      2:16  #hoyoverse                                               | Vermithor Edits
+  [0s spread] partynextdoor|come and see me
+      3:56  Come and See Me (feat. Drake)                            | PARTYNEXTDOOR - Topic
+      3:56  Come and See Me (feat. Drake)                            | Release - Topic
+  [0s spread] pb 65|12 saal
+      3:13  12 Saal (HD Video) | Bilal Saeed | Twelve | New Punjabi  | PB 65
+      3:13  12 Saal | Bilal Saeed | Twelve | Punjabi Songs | Speed R | Speed Records
+  [1s spread] pritam|bulleya
+      5:50  Bulleya                                                  | Arijit Singh - Topic
+      5:49  Bulleya                                                  | Pritam - Topic
+  [2s spread] rap city|21 savage summer walker prove it
+      3:30  21 Savage, Summer Walker - prove it (Official Audio)     | 21SavageVEVO
+      3:28  21 Savage, Summer Walker - prove it (Lyrics)             | Rap City
+  [1s spread] shafqat amanat ali|teri jhuki nazar
+      4:40  Teri Jhuki Nazar (From "Murder 3")                       | Pritam - Topic
+      4:39  Teri Jhuki Nazar (Film Version)                          | Shafqat Amanat Ali - T
+  [2s spread] t series|pehle bhi main
+      4:09  ANIMAL:Pehle Bhi Main(Full Video) | Ranbir Kapoor,Tripti | T-Series
+      4:11  Pehle Bhi Main                                           | Vishal Mishra - Topic
+  [0s spread] vishal dadlani|one two three four
+      3:49  One Two Three Four (Get On The Dance Floor)              | Vishal Dadlani - Topic
+      3:49  One Two Three Four (Get On The Dance Floor)              | Vishal-Shekhar - Topic
+  [1s spread] zee music company|kalank title track
+      5:26  Kalank Title Track - Full Video | Madhuri Sonakshi Alia  | Bollywood Love Vibes
+      5:25  Kalank Title Track - Full Video | Madhuri Sonakshi Alia  | Zee Music Company
+
+==============================================================================
+3. THE CASES THAT MUST STAY SEPARATE
+==============================================================================
+  SEPARATE  'Die For You': Joji - Topic vs TheWeekndVEVO
+  SEPARATE  'Falling': Harry Styles - Topic vs Trevor Daniel - Topic
+  SEPARATE  'Love Me': Justin Bieber - Topic vs Lil Wayne - Topic
+
+  'Raabta' uploads in the library: 3
+      4:04  Raabta                                       | Pritam - Topic       -> arijit singh|raabta
+      4:04  Raabta                                       | Arijit Singh - Topic -> arijit singh|raabta
+      4:46  Raabta                                       | Jokhay - Topic       -> jokhay|raabta
+  distinct songs after merge: 2

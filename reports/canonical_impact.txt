@@ -1,0 +1,65 @@
+============================================================================
+1. HOW MUCH COLLAPSES
+============================================================================
+  tracks by video id     3,365
+  canonical songs        2,935
+  collapsed                430  (12.8%)
+  songs with >1 upload     360
+  largest group              5  (the weeknd|out of time)
+
+============================================================================
+2. DID FAVOURITES LEAK PAST THE TOP-50 HOLD-OUT?
+============================================================================
+  A song whose plays split across uploads can sit below the cutoff on
+  every upload, surviving into the candidate pool the hold-out exists
+  to clear. Measured directly: of the 50 genuinely most-played SONGS,
+  how many had at least one upload survive into the raw pool?
+
+     split  true_top50  leaked_raw  leaked_canonical  leak_rate
+2026-04-01          50          36                 0     0.7200
+2026-05-01          50          35                 0     0.7000
+2026-06-01          50          36                 0     0.7200
+2026-07-01          50          37                 0     0.7400
+2026-08-01          50          38                 0     0.7600
+
+  mean leaked into the RAW pool: 36.4 of 50 (73%)   canonical: 0.0
+
+============================================================================
+3. REDISCOVERY, per split, raw vs canonical (half-life 14, k=20)
+============================================================================
+     split  raw_base  raw_score  canon_base  canon_score  raw_lift  canon_lift
+2026-04-01    0.3908     0.4763      0.3269       0.4330    0.2188      0.3246
+2026-05-01    0.3297     0.4002      0.4303       0.4631    0.2138      0.0762
+2026-06-01    0.2024     0.2749      0.1354       0.2227    0.3582      0.6448
+2026-07-01    0.4628     0.3386      0.1074       0.3916   -0.2684      2.6462
+2026-08-01    0.2076     0.2760      0.1718       0.3794    0.3295      1.2084
+
+============================================================================
+4. REPLAY, raw vs canonical (k=50, 30-day window)
+============================================================================
+  raw        tracks 2,335  score nDCG 0.5661  baseline 0.5480  spearman 0.396 vs 0.475
+  canonical  tracks 2,066  score nDCG 0.5506  baseline 0.5421  spearman 0.358 vs 0.430
+
+============================================================================
+5. NESTED HOLD-OUT ON CANONICAL TRACKS  (the headline)
+============================================================================
+  dev splits      ['2026-04-01', '2026-05-01']
+  held-out splits ['2026-06-01', '2026-07-01', '2026-08-01']
+  chosen half-life 14d
+
+     split  baseline  score   lift  win
+2026-06-01    0.1354 0.2227 0.6448 True
+2026-07-01    0.1074 0.3916 2.6462 True
+2026-08-01    0.1718 0.3794 1.2084 True
+
+  mean baseline 0.1382
+  mean score    0.3312
+  lift          +139.7%
+  wins          3/3
+  sign-test p   0.125
+
+  p floor at n=3: 0.125
+
+  VERDICT: Lift of +140% winning 3/3 splits, but NOT statistically established: with 3 held-out splits a clean sweep gives p = 0.125, so no result at this sample size can reach p < 0.05. At least 5 held-out splits would be needed. The effect is consistent and large; the evidence is thin.
+
+DONE
