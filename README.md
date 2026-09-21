@@ -1,23 +1,12 @@
 # taste-engine
 
-A personal music recommendation and playlist-generation system built over one year of
-my own YouTube listening history. It parses a Google Takeout export (40,619 plays,
-2,918 canonical tracks, 362 days), resolves and classifies each video through the
-YouTube Data API, scores tracks by play count and recency, clusters them by embedding
-similarity, and writes the resulting playlists back to my real YouTube account.
+A personal playlist builder over one year of my own YouTube listening history (40,619 plays, 2,918 distinct songs). It parses a Google Takeout export, resolves each video through the YouTube Data API, filters to music, merges duplicate uploads, clusters similar songs, and writes each cluster back to my YouTube account as a playlist.
 
-On the rediscovery task — surfacing tracks I'd stopped playing, excluding my global
-top 50 — it scores nDCG@20 of 0.3312 against a 0.1382 baseline, a 139.7% improvement
-(re-derived in `reports/rediscovery_headline.md`) that held in all three held-out
-splits. **At n=3 that is p=0.125 and not statistically certifiable.** The direction
-has survived six successive corrections to the pipeline; the magnitude has moved
-every single time.
+It does not recommend new music — it only works with songs already in my history. It was also meant to surface songs I'd forgotten, and it mostly doesn't: 197 of the 198 songs it currently selects were played in the previous 30 days.
 
-That second paragraph is the point of this repository. The interesting artifact here is
-not the number — it's the record of how many times the number was wrong, how it was
-caught, and what was measured to close each question. Five separate directions were
-investigated and killed by measurement rather than abandoned quietly. They're documented
-below with the same weight as the result.
+What it does measure: predicting which of my non-favourite songs I'll play next month. On that task it scores nDCG@20 of 0.3312 against a 0.1382 most-played baseline (+139.7%), and it won all three held-out test periods. At n=3 that is p=0.125 — not statistically certifiable, and this README says so rather than rounding it up.
+
+The interesting part of this repo is the measurement. Six ideas for improving it were tested and killed by measurement, each with a report, and the headline number was corrected six times before it settled.
 
 ![A 45-track private YouTube Music playlist titled "taste-engine: T-Series / Pritam / Sony Music India"](docs/playlist.png)
 
@@ -53,7 +42,9 @@ never marked; the report says so.
 **Dormancy signals (`reports/dormancy_probe.md`).** Hypothesis: rank by how long a track
 has been unplayed. The Takeout export spans 362 days and 61.8% of the library has exactly
 one lifetime play, so "days since last play" mostly measures when a track first appeared,
-not when it was abandoned. The signal doesn't exist in this data.
+not when it was abandoned. The signal doesn't exist in this data. A narrower follow-up looked for songs quiet for 3–5 weeks rather than a year (`reports/dormancy_distribution.md`): no cluster had more than 7, against the 20 a playlist would need.
+
+**Recency exclusion (`reports/recency_exclusion.md`).** Hypothesis: drop anything played in the last 30–90 days to force older songs through. At 30 days, 1 of 198 eligible songs survives; at 60 and 90, none. The score floor is already a recency filter, so stacking a second one empties the pool.
 
 **Backfill as a feature.** The cumulative result of the above: `BACKFILL_ENABLED` is
 `False`. The FLOOR / LENGTH / GUARD / RANK / CEILING machinery is still in the codebase,
@@ -79,6 +70,8 @@ Every command, every flag, and what each one costs: §10.
 ---
 
 ## 1. How the number was wrong three times
+
+Figures in this section describe the pipeline as it was at each step, measured at the time. Several came from code that has since been fixed, so they cannot be re-derived from the current repo.
 
 | | reported | why it was wrong |
 |---|---:|---|
@@ -129,7 +122,7 @@ bound rather than an estimate.
 
 Nested protocol (`scripts/nested_eval.py`): select the half-life on the
 **earlier** splits, report on the **later** ones the selection never touched.
-The gap is stark — on canonical tracks, the chosen setting scores **+22.1% on
+The gap is stark — on canonical tracks, the chosen setting scores **+18.3% on
 the dev splits** and the held-out splits are what the README reports.
 
 ### 1.3 Duplicate uploads, and why they break implicit feedback
@@ -267,7 +260,7 @@ already fetched, and two different songs called "Raabta" do not agree to the
 second.
 
 Merging when normalised titles match and runtimes agree within **3 s** finds
-**14 further merges**. It works exactly as intended on the case that motivated
+**17 further merges**. It works exactly as intended on the case that motivated
 it:
 
 | | runtime | channel | outcome |
@@ -276,10 +269,10 @@ it:
 | Raabta | 4:04 | Pritam – Topic | merged (singer vs composer credit) |
 | Raabta | 4:46 | Jokhay – Topic | **separate** |
 
-**The measured false-merge rate is 2 of 14 (14%).** Both are title collisions
+**The measured false-merge rate is 2 of 17 (12%).** Both are title collisions
 runtime cannot resolve: Imagine Dragons' *Demons* (2:58) with Joji's (2:57),
 and Lil Uzi Vert's *FLEX UP* (2:48) with Lil Yachty's (2:51). Dropping the
-tolerance to 0 s would exclude both but would also lose six of the twelve good
+tolerance to 0 s would exclude both but would also lose eight of the fifteen good
 merges, so 3 s is kept and the error rate is reported rather than hidden.
 
 **A genre tiebreaker was tried and is inert.** `topicCategories` refuses a
@@ -396,11 +389,11 @@ is thin, and those are different claims.
 Reproduced byte-for-byte across two independent runs, with full provenance
 and follow-up findings on what could have moved it: `reports/rediscovery_headline.md`.
 
-The honest summary: *a +121% lift winning every held-out split, which this
-dataset is too small to certify.* Not "a 121% improvement", and not "no
+The honest summary: *a +139.7% lift winning every held-out split, which this
+dataset is too small to certify.* Not "a 139.7% improvement", and not "no
 improvement".
 
-`recall@20` is capped at ~4.4% by construction — 20 picks against 296–496
+`recall@20` is capped at ~5.5% by construction — 20 picks against 212–365
 reachable songs — so it compares strategies and is never a headline.
 
 ### Replay — the trivial task, kept as contrast
@@ -480,7 +473,7 @@ One Google Takeout export, parsed into SQLite. Every figure is produced by
 | Music tracks, heuristics only | 2,858 (9.4% of unique videos) |
 | Music tracks, heuristics ∪ `categoryId` | 3,570 (11.7% of unique videos) |
 | **Canonical songs** (duplicates merged, non-music filtered) | **2,918** |
-| **Music plays** | **10,539** (25.9% of all plays) |
+| **Music plays** | **10,319** (25.4% of all plays) |
 
 3,570 tracks is the number. Not 17,138, not 30,440 — those are *videos
 watched*, and 88% of them are not music. The free heuristics alone find 2,858;
@@ -518,7 +511,7 @@ from:
   (56 of 58).
 - Only **2** playlists carry the TuneMyMusic transfer description, and those
   two are the only ones created on the export date.
-- Titles repeat across the two March dates — one appears ×3, five more ×2 —
+- Titles repeat across the two March dates — one appears ×3, eight more ×2 —
   the fingerprint of the same library imported twice. That also explains the
   **430 duplicate track rows**, why 58 playlists map to only 48 exported track
   files, and (see §1) why the model's usable history starts in March.
@@ -625,13 +618,13 @@ not a compromise forced by it.
 score = log1p(play_count) × 0.5 ** (days_since_last_play / half_life)
 ```
 
-`log1p` matters because **60% of tracks were played exactly once** and the top
-20 account for only 9.6% of plays. Raw counts would let a handful of obsessive
+`log1p` matters because **61.6% of tracks were played exactly once** and the top
+20 account for only 9.0% of plays. Raw counts would let a handful of obsessive
 repeats dominate every playlist. Travis Scott's "MY EYES" at 115 plays beats a
 20-play track by 5.75× raw but 1.57× after `log1p` — a real gap that does not
 crush the tail.
 
-`half_life` is selected by nested tuning on dev splits only (§1) — 30 days on
+`half_life` is selected by nested tuning on dev splits only (§1) — 14 days on
 canonical songs. The lift it buys on splits the selection never saw is large
 and consistent, and below the significance threshold this sample size can
 reach.
@@ -715,9 +708,9 @@ Why each variant fails:
   `20 Min`, `Ready`, `Snooze`. MiniLM cannot group those, so most land in
   noise and only a minority reach a real cluster. The artist string was not
   crowding out the signal; it *was* most of the signal.
-- **Genre labels are too coarse.** `topicCategories` returns 35 distinct tags,
+- **Genre labels are too coarse.** `topicCategories` returns 36 distinct tags,
   and the common ones dominate — `hip hop`, `pop`, `electronic`, `rhythm and
-  blues`. 95% of tracks carry at least one, so the coverage is real; the
+  blues`. 96.2% of tracks carry at least one, so the coverage is real; the
   resolution is not. Genre gives the encoder something to hold onto, so
   coverage is the best of the three modes and noise the lowest. But the
   resulting buckets are broad, and they cut across playlists the user drew
@@ -737,7 +730,7 @@ Fixed to match the equivalent guard `canonical.canonical_key` already had on
 title. The fix changed `title_artist`'s embedding text for only 2 of those 9
 tracks (ARI moved by −0.003, not enough to matter); the other 7 also have a
 NaN *title*, which collapses to the same literal `"nan"` independent of the
-artist fix — a second, currently unfixed instance of the identical bug in
+artist fix — a second, since fixed instance of the identical bug in
 `normalise_title` (see `reports/embedding_modes_remeasured.md`). `title` and
 `title_genre` modes were completely unaffected — they only use the channel
 to strip a prefix that never matched these tracks either way.
@@ -779,7 +772,7 @@ config file would be a lie the code tells itself.
 
 ## 8. Write-back
 
-> **Status: run live.** The test suite (`tests/test_writer.py`, 76 tests,
+> **Status: run live.** The test suite (`tests/test_writer.py`, 85 tests,
 > `tests/fake_youtube.py` standing in for the API) covers every behaviour
 > below. The first live `--commit` (2026-09-13) found a defect no mock had
 > modelled — see below — and after the fix, a full write has completed
@@ -1019,7 +1012,7 @@ src/taste_engine/
   writer.py          Phase 4 — quota-aware, resumable, self-verifying write
   cli.py             Phase 4 — the `taste-engine` command
 notebooks/01_eda.ipynb
-tests/               337 tests
+tests/               538 tests
 ```
 
 ## 10. Running it
@@ -1041,7 +1034,7 @@ python -m taste_engine.recommend               # candidate playlists
 python -m taste_engine.evaluate --split 2026-06-01 --test-end 2026-07-01 -k 50 --half-life 14   # replay, §2
 scripts/run.sh scripts/nested_eval.py                   # the headline, §1
 scripts/run.sh scripts/final_numbers.py                 # every other figure
-python -m pytest -q                            # 337 tests
+python -m pytest -q                            # 538 tests
 ```
 
 The venv lives on the WSL filesystem (`~/.venvs/taste-engine`) while the repo
@@ -1115,3 +1108,4 @@ It is public and built on one person's data, so:
   genuinely dormant music than its name suggests.
 - **Quota-bound.** Writing all qualifying clusters costs more than a single day's
   YouTube Data API allowance. Every write is run manually.
+- **Eligibility drifted with the export's age.** Until commits 9791196 and cd1b28d, scores were computed from today's date rather than from the last play in the export. Because scores decay over time, every day after the export made the MIN_SCORE = 0.5 cutoff stricter with no new data arriving. Anchoring to the last recorded play fixed it; on the day of the fix every score rose by the same factor (1.42×), so rankings did not change. The headline number was unaffected — its evaluation never used this path. Details in `reports/gate_drift_audit.md`.
