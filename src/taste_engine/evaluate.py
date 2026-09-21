@@ -299,7 +299,7 @@ def rediscovery_robustness(
     splits: list[str] | None = None,
     k: int = config.REDISCOVERY_K,
     half_life: float | None = None,
-    exclude_top: int = 50,
+    exclude_top: int = config.EXCLUDE_TOP,
     test_days: int | None = None,
     min_reachable: int = 20,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -352,7 +352,7 @@ def rediscovery_half_life_sweep(
     conn: sqlite3.Connection,
     half_lives: list[float] | None = None,
     k: int = config.REDISCOVERY_K,
-    exclude_top: int = 50,
+    exclude_top: int = config.EXCLUDE_TOP,
     test_days: int | None = None,
 ) -> pd.DataFrame:
     """Tune the decay on the task the product is actually for.
@@ -398,7 +398,7 @@ def nested_rediscovery(
     splits: list[str] | None = None,
     half_lives: list[float] | None = None,
     k: int = config.REDISCOVERY_K,
-    exclude_top: int = 50,
+    exclude_top: int = config.EXCLUDE_TOP,
     test_days: int | None = None,
     min_reachable: int = 20,
     canonical: bool = True,
@@ -802,12 +802,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.rediscovery or args.both:
             _print_rediscovery(
                 evaluate_rediscovery(
-                    conn, args.split, 20, args.half_life,
+                    conn, args.split, config.REDISCOVERY_K, args.half_life,
                     exclude_top=args.exclude_top, test_days=args.test_days,
                 )
             )
             detail, summary = rediscovery_robustness(
-                conn, k=20, half_life=args.half_life,
+                conn, k=config.REDISCOVERY_K, half_life=args.half_life,
                 exclude_top=args.exclude_top, test_days=args.test_days,
             )
             if not detail.empty:
