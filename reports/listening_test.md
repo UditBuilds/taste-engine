@@ -60,7 +60,7 @@ With cluster shape eliminated, the remaining explanation is selection.
 
 `--mode rediscover` excludes the author's **global** top-50 most-played tracks. That exclusion barely operates at cluster level: the mixed cluster carries roughly 250 plays spread across 48 tracks, so few or none of its entries appear in a global top-50, nothing is filtered, and the playlist ships the cluster's most-played tracks — precisely the ones still in rotation.
 
-This is corroborated by the dormancy-signal measurement (`reports/dormancy_signals.md`, computed 2026-09-16): across all 10 qualifying clusters, 177 of 180 shipped tracks (98.3%) had been played within the previous 30 days.
+This is corroborated by the dormancy-signal measurement (`reports/dormancy_signals.md`, computed 2026-09-16): across all 10 qualifying clusters, 197 of 198 shipped tracks (99.5%) had been played within the previous 30 days.
 
 The underlying mechanism is in the scoring itself. With `MIN_SCORE = 0.5` and a 14-day half-life, a single play falls below threshold in about 6.6 days, so the score is a recency measure far more than a dormancy one.
 

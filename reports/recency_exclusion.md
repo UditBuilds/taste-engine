@@ -14,10 +14,11 @@
 
 ## 1. Provenance
 
-- `as_of` (UTC): `2026-09-20T06:27:25.203526+00:00`
+- `as_of` (UTC): `2026-09-13T07:24:35+00:00`
 - `plays` row count: **40,619**
 - Canonical (music-only) tracks in the current frame: **2,918**
 - Method: a read-only script, run against the real database, that calls `taste_engine.dormancy.build_frames` (`dormancy.py:110-129`), `qualifying_clusters` (`dormancy.py:132-164`), `canonical_key_of` (`dormancy.py:45-65`), `plays_by_canonical_key` (`dormancy.py:68-81`), and `plays_in_window` (`dormancy.py:86-97`) directly — no recency logic was reimplemented. The script was kept in a scratch location, not added to `scripts/`, since the brief never reached a "go" for implementation and this measurement was never meant to be a permanent artifact.
+- These figures are now reproducible via `scripts/recency_exclusion.py` (default `--as-of`: `MAX(watched_at)`).
 - `half_life`: default (`config.RECENCY_HALF_LIFE_DAYS = 14`, unchanged — this brief touches no scoring).
 
 ## 2. Primary finding: the eligibility gate already is a recency filter
@@ -32,30 +33,32 @@ Everything in §3-§5 is that mechanism showing up in the data.
 
 ## 3. §2 feasibility table
 
-Qualifying clusters today: **8** (`native_eligible >= MIN_CLUSTER_NATIVE = 12`, post global-top-50 exclusion — the same FLOOR test `writer.plan()` applies for a `--cluster-name` write).
+Qualifying clusters today: **10** (`native_eligible >= MIN_CLUSTER_NATIVE = 12`, post global-top-50 exclusion — the same FLOOR test `writer.plan()` applies for a `--cluster-name` write).
 
 | cluster | name | cluster pool size | candidates today (score ≥ `MIN_SCORE`) | survivors @30d | survivors @60d | survivors @90d |
 |---:|---|---:|---:|---:|---:|---:|
-| 8 | Don Toliver | 71 | 17 | 1 | 0 | 0 |
-| 12 | T-Series / Pritam / Sony Music India | 490 | 13 | 1 | 0 | 0 |
-| 23 | The Weeknd | 75 | 19 | 0 | 0 | 0 |
+| 5 | Joji | 26 | 13 | 0 | 0 | 0 |
+| 8 | Don Toliver | 71 | 21 | 0 | 0 | 0 |
+| 12 | T-Series / Pritam / Sony Music India | 490 | 22 | 0 | 0 | 0 |
+| 23 | The Weeknd | 75 | 22 | 0 | 0 | 0 |
 | 24 | 21 Savage | 49 | 14 | 0 | 0 | 0 |
-| 25 | Metro Boomin | 65 | 23 | 0 | 0 | 0 |
-| 26 | Future | 84 | 17 | 0 | 0 | 0 |
-| 32 | Travis Scott | 86 | 16 | 0 | 0 | 0 |
-| 34 | Drake | 102 | 20 | 0 | 0 | 0 |
+| 25 | Metro Boomin | 65 | 26 | 0 | 0 | 0 |
+| 26 | Future | 84 | 23 | 1 | 0 | 0 |
+| 32 | Travis Scott | 86 | 21 | 0 | 0 | 0 |
+| 34 | Drake | 102 | 23 | 0 | 0 | 0 |
+| 36 | Lil Baby / Lil Peep / Chris Brown | 44 | 13 | 0 | 0 | 0 |
 
 "Survivors" = candidates today with **zero** plays inside the trailing window (i.e. what would remain as a candidate if that window's exclusion were applied).
 
 **Aggregate, by threshold:**
 
-| threshold | clusters clearing `MIN_CLUSTER_NATIVE` (12) | total candidate pool across all 8 clusters |
+| threshold | clusters clearing `MIN_CLUSTER_NATIVE` (12) | total candidate pool across all 10 clusters |
 |---|---:|---:|
-| 30d | 0 of 8 | 2 |
-| 60d | 0 of 8 | 0 |
-| 90d | 0 of 8 | 0 |
+| 30d | 0 of 10 | 1 |
+| 60d | 0 of 10 | 0 |
+| 90d | 0 of 10 | 0 |
 
-No cluster clears the floor at 90d (the aggressive end). The floor is not the effective constraint here — the pool empties (2 tracks, then 0, then 0) well before the question of which clusters individually clear 12 members becomes the deciding factor. No adjustment to `MIN_CLUSTER_NATIVE` changes this outcome.
+No cluster clears the floor at 90d (the aggressive end). The floor is not the effective constraint here — the pool empties (1 track, then 0, then 0) well before the question of which clusters individually clear 12 members becomes the deciding factor. No adjustment to `MIN_CLUSTER_NATIVE` changes this outcome.
 
 ## 4. Cluster-count drift (noted as drift, not investigated)
 
@@ -63,7 +66,7 @@ No cluster clears the floor at 90d (the aggressive end). The floor is not the ef
 
 ## 5. Reconfirmation against the published freshness figure
 
-Summing the table above: 139 candidates today across all 8 clusters, of which 2 were not played in the last 30 days — **137 of 139 (98.6%)** were played within the last 30 days. This independently reconfirms, at today's `as_of`, the same phenomenon `reports/dormancy_signals.md:188` published on 2026-09-16 (177 of 180, 98.3%). Different day, different denominator, same result.
+Summing the table above: 198 candidates today across all 10 clusters, of which 1 was not played in the last 30 days — **197 of 198 (99.5%)** were played within the last 30 days. This agrees with reports/dormancy_signals.md, but it is not an independent confirmation: both reports now share one anchor and one 198-track pool, and their tables match cell for cell. Before the anchor fix they looked like two measurements on different days. They were the same measurement.
 
 ## 6. Verdict
 
